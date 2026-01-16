@@ -22,6 +22,25 @@ npm run scrape:wohnberatung:login
 This opens a browser window so you can log in. Cookies are stored in
 `data/wohnberatung/storageState.json` for reuse.
 
+## Dev (hot reload)
+
+```bash
+npm run dev
+```
+
+This watches:
+- `src/ui/app.ts` (TypeScript build to `public/app.js`)
+- `src/ui/styles.css` (copied to `public/app.css`)
+- `src/server.ts` (auto-restart)
+
+Build failures do not stop the watch process; it resumes once fixed.
+
+## Build UI assets
+
+```bash
+npm run build:ui
+```
+
 ## Run server
 
 ```bash

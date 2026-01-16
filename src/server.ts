@@ -85,6 +85,7 @@ const main = async () => {
 
   const app = express();
   app.use("/assets", express.static(path.resolve(ASSETS_DIR)));
+  app.use(express.static(path.resolve("public")));
 
   const clients = new Set<express.Response>();
 
@@ -114,6 +115,7 @@ const main = async () => {
     });
   });
 
+  app.get("/favicon.ico", (_, res) => res.status(204).end());
   app.get("/api/state", (_, res) => res.json(state));
   app.get("/", (_, res) =>
     res.send(renderPage(state, { nextRefreshAt: getNextRefreshAtWithFallback() })),

@@ -7,6 +7,8 @@
   },
   "scripts": {
     "scrape:wohnberatung:login": "tsx src/scrapers/wohnberatung/login.ts",
+    "build:ui": "tsc -p tsconfig.ui.json && cp src/ui/styles.css public/app.css",
+    "dev": "tsx scripts/dev.ts",
     "start": "tsx src/server.ts",
     "lint": "oxlint src",
     "format": "oxfmt --check src",
