@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import { STORAGE_STATE_PATH } from "./constants.js";
+import { storageStatePath } from "./config.js";
 
 export type HttpClient = {
   fetchHtml: (url: string, options?: RequestInit) => Promise<string>;
@@ -23,7 +23,7 @@ const isCookieForHost = (cookie: StoredCookie, host: string) => {
 };
 
 const buildCookieHeader = async (url: string) => {
-  const data = await fs.readFile(STORAGE_STATE_PATH, "utf8");
+  const data = await fs.readFile(storageStatePath, "utf8");
   const state = JSON.parse(data) as StorageState;
   const host = new URL(url).hostname;
   const cookies = state.cookies

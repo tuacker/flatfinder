@@ -1,10 +1,10 @@
 import { load } from "cheerio";
-import { BASE_URL } from "./constants.js";
+import { baseUrl } from "./config.js";
 import type { PlanungsprojektDetail } from "./state.js";
 
 const absoluteUrl = (value: string | null) => {
   if (!value) return null;
-  return new URL(value.replace(/&amp;/g, "&"), BASE_URL).toString();
+  return new URL(value.replace(/&amp;/g, "&"), baseUrl).toString();
 };
 
 export const parsePlanungsprojektDetail = (html: string): PlanungsprojektDetail => {

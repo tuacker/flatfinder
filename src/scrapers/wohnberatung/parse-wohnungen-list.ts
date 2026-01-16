@@ -1,5 +1,5 @@
 import { load } from "cheerio";
-import { BASE_URL } from "./constants.js";
+import { baseUrl } from "./config.js";
 
 export type WohnungListItem = {
   id: string | null;
@@ -16,17 +16,7 @@ export type WohnungListItem = {
   registrationEnd: string | null;
   flags: {
     angemeldet: boolean;
-    zugesagt: boolean;
-    maxlimit: boolean;
-    interesse: boolean;
-    erstreihung: boolean;
-    bautraeger: boolean;
   };
-};
-
-export type WohnungListResult = {
-  total: number | null;
-  items: WohnungListItem[];
 };
 
 const normalize = (value: string | undefined | null) =>
@@ -46,7 +36,7 @@ const parseNumber = (value: string | null) => {
 
 const absoluteUrl = (value: string | null) => {
   if (!value) return null;
-  return new URL(value.replace(/&amp;/g, "&"), BASE_URL).toString();
+  return new URL(value.replace(/&amp;/g, "&"), baseUrl).toString();
 };
 
 const parseFlags = (className: string | undefined | null) => {
@@ -54,23 +44,11 @@ const parseFlags = (className: string | undefined | null) => {
   const has = (flag: string) => classList.includes(flag);
   return {
     angemeldet: has("angemeldet-1"),
-    zugesagt: has("zugesagt-1"),
-    maxlimit: has("maxlimit-1"),
-    interesse: has("interesse-1"),
-    erstreihung: has("erstreihung-1"),
-    bautraeger: has("bautraeger-1"),
   };
 };
 
-export const parseWohnungenList = (html: string): WohnungListResult => {
+export const parseWohnungenList = (html: string): WohnungListItem[] => {
   const $ = load(html);
-
-  const totalText =
-    $("h2.wbw-blue")
-      .filter((_, el) => $(el).text().includes("Wohnungen gefunden"))
-      .first()
-      .text() || "";
-  const total = parseNumber(totalText);
 
   const items: WohnungListItem[] = [];
 
@@ -117,5 +95,5 @@ export const parseWohnungenList = (html: string): WohnungListResult => {
     });
   });
 
-  return { total, items };
+  return items;
 };

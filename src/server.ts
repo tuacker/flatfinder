@@ -2,11 +2,12 @@ import express from "express";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
+  assetsDir,
   planungsprojekteIntervalMinutes,
   rateLimitMonthly,
+  storageStatePath,
   wohnungssucheIntervalMinutes,
 } from "./scrapers/wohnberatung/config.js";
-import { ASSETS_DIR, STORAGE_STATE_PATH } from "./scrapers/wohnberatung/constants.js";
 import {
   createRateLimiter,
   scrapePlanungsprojekte,
@@ -71,7 +72,7 @@ const scheduleJob = (
 
 const ensureStorageState = async () => {
   try {
-    await fs.access(STORAGE_STATE_PATH);
+    await fs.access(storageStatePath);
   } catch {
     throw new Error(
       "Missing storage state. Run `npm run scrape:wohnberatung:login` first to save cookies.",
@@ -84,7 +85,7 @@ const main = async () => {
   const state = await loadState();
 
   const app = express();
-  app.use("/assets", express.static(path.resolve(ASSETS_DIR)));
+  app.use("/assets", express.static(path.resolve(assetsDir)));
   app.use(express.static(path.resolve("public")));
 
   const clients = new Set<express.Response>();

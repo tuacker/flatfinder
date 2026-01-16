@@ -2,11 +2,14 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { load } from "cheerio";
 import {
+  assetsDir,
+  baseUrl,
   planungsprojekteRequestCost,
+  planungsprojekteUrl,
+  suchprofilUrl,
   wohnungssuchePreviewCost,
   wohnungssucheResultCost,
 } from "./config.js";
-import { ASSETS_DIR, BASE_URL, PLANUNGSPROJEKTE_URL, SUCHPROFIL_URL } from "./constants.js";
 import { filterPlanungsprojekte, hasExcludedKeyword } from "./filter.js";
 import { createHttpClient } from "./http-client.js";
 import { parsePlanungsprojektDetail } from "./parse-planungsprojekt-detail.js";
@@ -17,8 +20,6 @@ import { parseWohnungenList } from "./parse-wohnungen-list.js";
 import type { FlatfinderState, PlanungsprojektRecord, WohnungRecord } from "./state.js";
 
 export type RateLimiter = {
-  max: number;
-  canConsume: (amount: number) => boolean;
   consume: (amount: number) => boolean;
 };
 
@@ -30,18 +31,14 @@ export const createRateLimiter = (state: FlatfinderState, max: number): RateLimi
     }
   };
 
-  const canConsume = (amount: number) => {
-    ensureMonth();
-    return state.rateLimit.count + amount <= max;
-  };
-
   const consume = (amount: number) => {
-    if (!canConsume(amount)) return false;
+    ensureMonth();
+    if (state.rateLimit.count + amount > max) return false;
     state.rateLimit.count += amount;
     return true;
   };
 
-  return { max, canConsume, consume };
+  return { consume };
 };
 
 const normalize = (value: string | null | undefined) =>
@@ -54,7 +51,7 @@ const normalize = (value: string | null | undefined) =>
 
 const absoluteUrl = (href: string | null) => {
   if (!href) return null;
-  return new URL(href.replace(/&amp;/g, "&"), BASE_URL).toString();
+  return new URL(href.replace(/&amp;/g, "&"), baseUrl).toString();
 };
 
 const parseCount = (value: string | null) => {
@@ -71,7 +68,7 @@ const downloadAsset = async (
   if (!url) return null;
   const filename = path.basename(new URL(url).pathname);
   const relativePath = path.posix.join(targetDir, filename);
-  const targetPath = path.resolve(ASSETS_DIR, relativePath);
+  const targetPath = path.resolve(assetsDir, relativePath);
 
   await fs.mkdir(path.dirname(targetPath), { recursive: true });
 
@@ -98,12 +95,12 @@ export const scrapePlanungsprojekte = async (state: FlatfinderState, rateLimiter
     return;
   }
 
-  const client = await createHttpClient(BASE_URL);
+  const client = await createHttpClient(baseUrl);
   const now = new Date().toISOString();
 
-  const html = await client.fetchHtml(PLANUNGSPROJEKTE_URL);
-  const parsed = parsePlanungsprojekte(html);
-  const filtered = filterPlanungsprojekte(parsed.items).included;
+  const html = await client.fetchHtml(planungsprojekteUrl);
+  const items = parsePlanungsprojekte(html);
+  const filtered = filterPlanungsprojekte(items);
 
   const existing = new Map(state.planungsprojekte.map((item) => [item.id, item]));
   const next: PlanungsprojektRecord[] = [];
@@ -136,8 +133,11 @@ type WohnungssucheTarget = {
   count: number;
 };
 
-const extractTarget = (html: string, art: string, source: WohnungssucheTarget["source"]) => {
-  const $ = load(html);
+const extractTarget = (
+  $: ReturnType<typeof load>,
+  art: string,
+  source: WohnungssucheTarget["source"],
+): WohnungssucheTarget => {
   const link = $(`a[href*='art=${art}']`).first();
   const container = link.closest(".col-md-6");
   const titleText = normalize(container.find("h3.thumbnail-menu-caption-title").text());
@@ -145,11 +145,11 @@ const extractTarget = (html: string, art: string, source: WohnungssucheTarget["s
     source,
     href: link.attr("href") ?? null,
     count: parseCount(titleText),
-  } satisfies WohnungssucheTarget;
+  };
 };
 
 const fetchWohnungssucheTargets = async (client: Awaited<ReturnType<typeof createHttpClient>>) => {
-  const suchprofilHtml = await client.fetchHtml(SUCHPROFIL_URL);
+  const suchprofilHtml = await client.fetchHtml(suchprofilUrl);
   const form = parseSuchprofilForm(suchprofilHtml);
 
   if (form.method !== "post") {
@@ -160,18 +160,13 @@ const fetchWohnungssucheTargets = async (client: Awaited<ReturnType<typeof creat
     method: "POST",
     headers: {
       "content-type": "application/x-www-form-urlencoded",
-      referer: SUCHPROFIL_URL,
+      referer: suchprofilUrl,
     },
     body: form.fields.toString(),
   });
 
-  return {
-    overviewHtml,
-    targets: [
-      extractTarget(overviewHtml, "gefoerdert", "gefoerdert"),
-      extractTarget(overviewHtml, "gemeinde", "gemeinde"),
-    ],
-  };
+  const $ = load(overviewHtml);
+  return [extractTarget($, "gefoerdert", "gefoerdert"), extractTarget($, "gemeinde", "gemeinde")];
 };
 
 export const scrapeWohnungen = async (state: FlatfinderState, rateLimiter: RateLimiter) => {
@@ -180,10 +175,10 @@ export const scrapeWohnungen = async (state: FlatfinderState, rateLimiter: RateL
     return;
   }
 
-  const client = await createHttpClient(BASE_URL);
+  const client = await createHttpClient(baseUrl);
   const now = new Date().toISOString();
 
-  const { targets } = await fetchWohnungssucheTargets(client);
+  const targets = await fetchWohnungssucheTargets(client);
 
   const listItems: WohnungRecord[] = [];
   const sourcesFetched = new Set<WohnungRecord["source"]>();
@@ -204,10 +199,10 @@ export const scrapeWohnungen = async (state: FlatfinderState, rateLimiter: RateL
     }
 
     const listHtml = await client.fetchHtml(absoluteUrl(target.href)!);
-    const parsed = parseWohnungenList(listHtml);
+    const items = parseWohnungenList(listHtml);
     sourcesFetched.add(target.source);
 
-    for (const item of parsed.items) {
+    for (const item of items) {
       if (!item.id) continue;
       const title = titleForWohnung(item);
       if (hasExcludedKeyword(title)) continue;
@@ -235,33 +230,28 @@ export const scrapeWohnungen = async (state: FlatfinderState, rateLimiter: RateL
     };
 
     if (!record.detail) {
-      const detailHtml = await client.fetchHtml(record.url ?? "");
-      const detail = parseWohnungDetail(detailHtml);
-      record.detail = detail;
+      if (!record.url) continue;
+      const detailHtml = await client.fetchHtml(record.url);
+      record.detail = parseWohnungDetail(detailHtml);
+    }
 
-      const superfoerderung = detail.superfoerderung?.toLowerCase() ?? "";
-      if (superfoerderung === "ja") {
-        continue;
-      }
+    if (record.detail?.superfoerderung?.toLowerCase() === "ja") {
+      continue;
+    }
 
+    if (!record.assets) {
       const assetsDir = record.id ?? "unknown";
       record.assets = {
         thumbnail: await downloadAsset(client.download, record.thumbnailUrl, assetsDir),
-        mapImage: await downloadAsset(client.download, detail.mapImageUrl, assetsDir),
         images: [],
       };
 
       const images: string[] = [];
-      for (const url of detail.imageUrls) {
+      for (const url of record.detail?.imageUrls ?? []) {
         const asset = await downloadAsset(client.download, url, assetsDir);
         if (asset) images.push(asset);
       }
       record.assets.images = images;
-    } else {
-      const superfoerderung = record.detail.superfoerderung?.toLowerCase() ?? "";
-      if (superfoerderung === "ja") {
-        continue;
-      }
     }
 
     next.push(record);

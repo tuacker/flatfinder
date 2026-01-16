@@ -1,14 +1,10 @@
 import { load } from "cheerio";
-import { BASE_URL } from "./constants.js";
+import { baseUrl } from "./config.js";
 
 export type SuchprofilForm = {
   action: string;
   method: string;
   fields: URLSearchParams;
-};
-
-const addValue = (params: URLSearchParams, name: string, value: string) => {
-  params.append(name, value);
 };
 
 export const parseSuchprofilForm = (html: string): SuchprofilForm => {
@@ -18,7 +14,7 @@ export const parseSuchprofilForm = (html: string): SuchprofilForm => {
     throw new Error("Suchprofil form not found.");
   }
 
-  const action = new URL(form.attr("action") ?? "", BASE_URL).toString();
+  const action = new URL(form.attr("action") ?? "", baseUrl).toString();
   const method = (form.attr("method") ?? "get").toLowerCase();
   const fields = new URLSearchParams();
 
@@ -26,6 +22,7 @@ export const parseSuchprofilForm = (html: string): SuchprofilForm => {
     const node = $(el);
     const name = node.attr("name");
     if (!name) return;
+    if (node.is(":disabled") || node.attr("disabled") !== undefined) return;
 
     const tag = el.tagName.toLowerCase();
     const type = (node.attr("type") ?? "text").toLowerCase();
@@ -37,13 +34,13 @@ export const parseSuchprofilForm = (html: string): SuchprofilForm => {
     if (tag === "select") {
       node.find("option:selected").each((__, option) => {
         const value = $(option).attr("value") ?? $(option).text().trim();
-        addValue(fields, name, value);
+        fields.append(name, value);
       });
       return;
     }
 
     const value = node.attr("value") ?? node.val()?.toString() ?? "";
-    addValue(fields, name, value);
+    fields.append(name, value);
   });
 
   if (!fields.has("action")) {

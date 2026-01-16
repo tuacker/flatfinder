@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { STATE_PATH } from "./constants.js";
+import { statePath } from "./config.js";
 import type { Planungsprojekt } from "./parse-planungsprojekte.js";
 import type { WohnungDetail } from "./parse-wohnung-detail.js";
 import type { WohnungListItem } from "./parse-wohnungen-list.js";
@@ -23,7 +23,6 @@ export type WohnungRecord = WohnungListItem & {
   detail?: WohnungDetail;
   assets?: {
     thumbnail?: string | null;
-    mapImage?: string | null;
     images?: string[];
   };
 };
@@ -40,61 +39,26 @@ export type FlatfinderState = {
   rateLimit: RateLimitState;
 };
 
+const currentMonth = () => new Date().toISOString().slice(0, 7);
+
 const defaultState = (): FlatfinderState => ({
   updatedAt: null,
   planungsprojekte: [],
   wohnungen: [],
   rateLimit: {
-    month: new Date().toISOString().slice(0, 7),
+    month: currentMonth(),
     count: 0,
   },
 });
-
-const normalizePlanungsprojekt = (item: PlanungsprojektRecord) => {
-  const { detail, ...rest } = item;
-  return {
-    ...rest,
-    detail: detail
-      ? {
-          lageplanUrl: detail.lageplanUrl ?? null,
-          imageUrls: Array.isArray(detail.imageUrls) ? detail.imageUrls : [],
-        }
-      : undefined,
-  } as PlanungsprojektRecord;
-};
-
-const normalizeWohnung = (item: WohnungRecord) => {
-  const { detail, assets, ...rest } = item;
-  return {
-    ...rest,
-    detail: detail
-      ? {
-          superfoerderung: detail.superfoerderung ?? null,
-          mapUrl: detail.mapUrl ?? null,
-          mapImageUrl: detail.mapImageUrl ?? null,
-          imageUrls: Array.isArray(detail.imageUrls) ? detail.imageUrls : [],
-        }
-      : undefined,
-    assets: assets
-      ? {
-          thumbnail: assets.thumbnail ?? null,
-          mapImage: assets.mapImage ?? null,
-          images: Array.isArray(assets.images) ? assets.images : [],
-        }
-      : undefined,
-  } as WohnungRecord;
-};
 
 const normalizeState = (raw: FlatfinderState | null | undefined): FlatfinderState => {
   if (!raw) return defaultState();
   return {
     updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : null,
-    planungsprojekte: Array.isArray(raw.planungsprojekte)
-      ? raw.planungsprojekte.map(normalizePlanungsprojekt)
-      : [],
-    wohnungen: Array.isArray(raw.wohnungen) ? raw.wohnungen.map(normalizeWohnung) : [],
+    planungsprojekte: Array.isArray(raw.planungsprojekte) ? raw.planungsprojekte : [],
+    wohnungen: Array.isArray(raw.wohnungen) ? raw.wohnungen : [],
     rateLimit: {
-      month: raw.rateLimit?.month ?? new Date().toISOString().slice(0, 7),
+      month: typeof raw.rateLimit?.month === "string" ? raw.rateLimit.month : currentMonth(),
       count: typeof raw.rateLimit?.count === "number" ? raw.rateLimit.count : 0,
     },
   };
@@ -102,7 +66,7 @@ const normalizeState = (raw: FlatfinderState | null | undefined): FlatfinderStat
 
 export const loadState = async (): Promise<FlatfinderState> => {
   try {
-    const data = await fs.readFile(STATE_PATH, "utf8");
+    const data = await fs.readFile(statePath, "utf8");
     return normalizeState(JSON.parse(data) as FlatfinderState);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -113,6 +77,6 @@ export const loadState = async (): Promise<FlatfinderState> => {
 };
 
 export const saveState = async (state: FlatfinderState) => {
-  await fs.mkdir(path.dirname(STATE_PATH), { recursive: true });
-  await fs.writeFile(STATE_PATH, JSON.stringify(normalizeState(state), null, 2), "utf8");
+  await fs.mkdir(path.dirname(statePath), { recursive: true });
+  await fs.writeFile(statePath, JSON.stringify(state, null, 2), "utf8");
 };

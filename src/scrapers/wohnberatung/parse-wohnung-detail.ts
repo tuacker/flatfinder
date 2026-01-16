@@ -1,10 +1,9 @@
 import { load } from "cheerio";
-import { BASE_URL } from "./constants.js";
+import { baseUrl } from "./config.js";
 
 export type WohnungDetail = {
   superfoerderung: string | null;
   mapUrl: string | null;
-  mapImageUrl: string | null;
   imageUrls: string[];
 };
 
@@ -18,7 +17,7 @@ const normalize = (value: string | undefined | null) =>
 
 const absoluteUrl = (value: string | null) => {
   if (!value) return null;
-  return new URL(value.replace(/&amp;/g, "&"), BASE_URL).toString();
+  return new URL(value.replace(/&amp;/g, "&"), baseUrl).toString();
 };
 
 export const parseWohnungDetail = (html: string): WohnungDetail => {
@@ -26,7 +25,6 @@ export const parseWohnungDetail = (html: string): WohnungDetail => {
 
   const mapAnchor = $("a[href*='google.com/maps']").first();
   const mapUrl = absoluteUrl(mapAnchor.attr("href") ?? null);
-  const mapImageUrl = absoluteUrl($("img.googlemap_static").first().attr("src") ?? null);
 
   const imageUrls = $("img.img-150")
     .toArray()
@@ -42,7 +40,6 @@ export const parseWohnungDetail = (html: string): WohnungDetail => {
   return {
     superfoerderung,
     mapUrl,
-    mapImageUrl,
     imageUrls,
   };
 };

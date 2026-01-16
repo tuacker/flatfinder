@@ -1,13 +1,19 @@
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
+import { chromium, type Page } from "playwright";
 import path from "node:path";
 import fs from "node:fs/promises";
-import { browserHeadless, browserSlowMoMs, loginHeadless, loginTimeoutMs } from "./config.js";
-import { LOGIN_URL, SUCHPROFIL_URL, STORAGE_STATE_PATH } from "./constants.js";
+import {
+  browserSlowMoMs,
+  loginHeadless,
+  loginTimeoutMs,
+  loginUrl,
+  storageStatePath,
+  suchprofilUrl,
+} from "./config.js";
 
-const storageStatePath = path.resolve(STORAGE_STATE_PATH);
+const resolvedStorageStatePath = path.resolve(storageStatePath);
 
 const ensureDir = async () => {
-  await fs.mkdir(path.dirname(storageStatePath), { recursive: true });
+  await fs.mkdir(path.dirname(resolvedStorageStatePath), { recursive: true });
 };
 
 const isLoginPage = async (page: Page) => {
@@ -23,7 +29,7 @@ export const loginAndSaveState = async () => {
   const context = await browser.newContext();
   const page = await context.newPage();
 
-  await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
+  await page.goto(loginUrl, { waitUntil: "domcontentloaded" });
   console.log("Manual login: please sign in in the opened browser window.");
   console.log("Waiting for login to complete...");
 
@@ -31,42 +37,13 @@ export const loginAndSaveState = async () => {
     timeout: loginTimeoutMs,
   });
 
-  await page.goto(SUCHPROFIL_URL, { waitUntil: "domcontentloaded" });
+  await page.goto(suchprofilUrl, { waitUntil: "domcontentloaded" });
 
   if (await isLoginPage(page)) {
     await browser.close();
     throw new Error("Login failed. Please retry the manual login.");
   }
 
-  await context.storageState({ path: storageStatePath });
+  await context.storageState({ path: resolvedStorageStatePath });
   await browser.close();
-};
-
-export const createAuthenticatedContext = async (): Promise<{
-  browser: Browser;
-  context: BrowserContext;
-  page: Page;
-}> => {
-  const storageExists = await fs
-    .access(storageStatePath)
-    .then(() => true)
-    .catch(() => false);
-
-  if (!storageExists) {
-    throw new Error(
-      "Missing storage state. Run `npm run scrape:wohnberatung:login` to save cookies.",
-    );
-  }
-
-  const browser = await chromium.launch({ headless: browserHeadless, slowMo });
-  const context = await browser.newContext({ storageState: storageStatePath });
-  const page = await context.newPage();
-  await page.goto(SUCHPROFIL_URL, { waitUntil: "domcontentloaded" });
-
-  if (await isLoginPage(page)) {
-    await browser.close();
-    throw new Error("Login required. Run `npm run scrape:wohnberatung:login`.");
-  }
-
-  return { browser, context, page };
 };
