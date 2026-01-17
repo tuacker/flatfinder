@@ -13,7 +13,7 @@ export type PlanungsprojektDetail = {
 export type InterestInfo = {
   requestedAt?: string | null;
   rank?: number | null;
-  holdUntil?: string | null;
+  locked?: boolean | null;
   watch?: {
     nextCheckAt?: string | null;
     lastCheckAt?: string | null;
@@ -48,46 +48,38 @@ export type RateLimitState = {
   count: number;
 };
 
-export type PendingSwap = {
-  id: string;
-  type: "wohnungen" | "planungsprojekte";
-  targetId: string;
-  dropId: string;
-  createdAt: string;
-};
-
 export type FlatfinderState = {
   updatedAt: string | null;
+  lastScrapeAt?: string | null;
   planungsprojekte: PlanungsprojektRecord[];
   wohnungen: WohnungRecord[];
   rateLimit: RateLimitState;
-  pendingSwaps: PendingSwap[];
 };
 
 const currentMonth = () => new Date().toISOString().slice(0, 7);
 
 const defaultState = (): FlatfinderState => ({
   updatedAt: null,
+  lastScrapeAt: null,
   planungsprojekte: [],
   wohnungen: [],
   rateLimit: {
     month: currentMonth(),
     count: 0,
   },
-  pendingSwaps: [],
 });
 
 const normalizeState = (raw: FlatfinderState | null | undefined): FlatfinderState => {
   if (!raw) return defaultState();
   return {
     updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : null,
+    lastScrapeAt: typeof raw.lastScrapeAt === "string" ? raw.lastScrapeAt : null,
     planungsprojekte: Array.isArray(raw.planungsprojekte) ? raw.planungsprojekte : [],
     wohnungen: Array.isArray(raw.wohnungen) ? raw.wohnungen : [],
     rateLimit: {
       month: typeof raw.rateLimit?.month === "string" ? raw.rateLimit.month : currentMonth(),
       count: typeof raw.rateLimit?.count === "number" ? raw.rateLimit.count : 0,
     },
-    pendingSwaps: Array.isArray(raw.pendingSwaps) ? raw.pendingSwaps : [],
   };
 };
 

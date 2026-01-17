@@ -33,7 +33,7 @@ const updateRefreshCountdowns = () => {
     const nextAt = node.getAttribute("data-refresh-at");
     const formatted = formatRefreshLeft(nextAt);
     if (formatted) {
-      node.textContent = `refresh ${formatted}`;
+      node.textContent = formatted;
     }
   });
 };
@@ -46,7 +46,7 @@ const highlightNew = () => {
 };
 
 const updateRefreshLabel = () => {
-  const updatedAt = document.body.getAttribute("data-updated-at");
+  const updatedAt = document.body.getAttribute("data-last-scrape-at");
   const label = document.getElementById("last-refresh");
   if (!label || !updatedAt) return;
   const diffMs = Date.now() - new Date(updatedAt).getTime();
@@ -85,6 +85,17 @@ const bindOnce = (element: HTMLElement, key: string, handler: (event: Event) => 
   element.addEventListener("click", handler);
 };
 
+const bindOnceEvent = (
+  element: HTMLElement,
+  key: string,
+  eventName: string,
+  handler: (event: Event) => void,
+) => {
+  if (element.dataset[key] === "true") return;
+  element.dataset[key] = "true";
+  element.addEventListener(eventName, handler);
+};
+
 const initMapToggles = () => {
   document.querySelectorAll<HTMLButtonElement>(".js-toggle-map").forEach((button) => {
     bindOnce(button, "boundMap", (event) => {
@@ -99,16 +110,12 @@ const initMapToggles = () => {
 };
 
 type ViewName = "root" | "hidden" | "interested";
-let currentView: ViewName = "root";
+let reorderActive = false;
 
-const clearHoldOnLeaveRoot = async () => {
-  try {
-    const response = await fetch("/api/interest/hold/clear", { method: "POST" });
-    if (!response.ok) return;
-  } catch {
-    return;
-  }
-  await refreshFromServer();
+const syncReorderActive = () => {
+  reorderActive = Array.from(document.querySelectorAll<HTMLElement>(".list[data-rank-mode]")).some(
+    (list) => list.getAttribute("data-rank-mode") === "true",
+  );
 };
 
 const resolveView = (pathname: string): { view: ViewName; path: string } => {
@@ -119,15 +126,11 @@ const resolveView = (pathname: string): { view: ViewName; path: string } => {
 };
 
 const setView = (view: ViewName, options: { replace?: boolean } = {}) => {
-  const previous = currentView;
-  currentView = view;
   document.body.setAttribute("data-view", view);
   document.querySelectorAll<HTMLButtonElement>(".js-view-toggle").forEach((button) => {
     button.classList.toggle("is-active", button.dataset.view === view);
   });
-  if (previous === "root" && view !== "root") {
-    void clearHoldOnLeaveRoot();
-  }
+  clearSwapHighlights();
   const targetPath = view === "root" ? "/" : `/${view}`;
   if (window.location.pathname === targetPath) return;
   if (options.replace) {
@@ -205,12 +208,207 @@ const updateHiddenCount = () => {
   if (label) label.textContent = String(count);
 };
 
+const signupLimit = 3;
+
+const getRequestedAtValue = (value: string | null | undefined) => {
+  if (!value) return Number.NEGATIVE_INFINITY;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
+};
+
+const getRowPriority = (row: HTMLElement) => {
+  const rankValue = row.getAttribute("data-rank");
+  const parsedRank = rankValue ? Number(rankValue) : Number.NaN;
+  if (Number.isFinite(parsedRank)) {
+    return { bucket: 0, value: parsedRank };
+  }
+  return { bucket: 1, value: getRequestedAtValue(row.getAttribute("data-requested-at")) };
+};
+
+const compareRowPriority = (left: HTMLElement, right: HTMLElement) => {
+  const leftPriority = getRowPriority(left);
+  const rightPriority = getRowPriority(right);
+  if (leftPriority.bucket !== rightPriority.bucket) {
+    return leftPriority.bucket - rightPriority.bucket;
+  }
+  if (leftPriority.value < rightPriority.value) return -1;
+  if (leftPriority.value > rightPriority.value) return 1;
+  return 0;
+};
+
+function clearSwapHighlights() {
+  document.querySelectorAll<HTMLElement>(".row.is-swap-target").forEach((row) => {
+    row.classList.remove("is-swap-target");
+  });
+}
+
+const updateSwapIndicatorsForList = (list: HTMLElement) => {
+  const rows = Array.from(list.querySelectorAll<HTMLElement>(":scope > .row"));
+  rows.forEach((row) => {
+    const indicator = row.querySelector<HTMLElement>(".swap-indicator");
+    if (!indicator) return;
+    indicator.textContent = "";
+    indicator.classList.remove("is-active", "is-waiting");
+  });
+
+  if (list.getAttribute("data-rank-mode") !== "true") return;
+
+  const signed = rows.filter((row) => row.classList.contains("is-signed"));
+  const droppableSigned = signed.filter((row) => row.getAttribute("data-locked") !== "true");
+  const desired = rows.slice(0, signupLimit);
+  const desiredUnsigned = desired.filter((row) => !row.classList.contains("is-signed"));
+
+  const setIndicator = (row: HTMLElement, text: string, waiting: boolean) => {
+    const indicator = row.querySelector<HTMLElement>(".swap-indicator");
+    if (!indicator) return;
+    indicator.textContent = text;
+    indicator.classList.add("is-active");
+    indicator.classList.toggle("is-waiting", waiting);
+  };
+
+  const titleForRow = (row: HTMLElement) =>
+    row.querySelector(".title")?.textContent?.trim() ?? "item";
+
+  if (signed.length < signupLimit) {
+    desiredUnsigned.forEach((row) => {
+      const waiting = row.getAttribute("data-maxlimit") === "true";
+      setIndicator(row, waiting ? "Will signup (waiting)" : "Will signup", waiting);
+    });
+    return;
+  }
+
+  if (!desiredUnsigned.length || droppableSigned.length === 0) return;
+
+  const signedByWorst = [...droppableSigned].sort((a, b) => {
+    const aIndex = rows.indexOf(a);
+    const bIndex = rows.indexOf(b);
+    return bIndex - aIndex;
+  });
+
+  desiredUnsigned.forEach((targetRow, index) => {
+    const dropRow = signedByWorst[index];
+    if (!dropRow) return;
+    const waiting = targetRow.getAttribute("data-maxlimit") === "true";
+    const dropTitle = titleForRow(dropRow);
+    const targetTitle = titleForRow(targetRow);
+    setIndicator(targetRow, `Swap with ${dropTitle}${waiting ? " (waiting)" : ""}`, waiting);
+    setIndicator(dropRow, `Will drop for ${targetTitle}`, false);
+  });
+};
+
+const updateSwapIndicators = () => {
+  document
+    .querySelectorAll<HTMLElement>(".list[data-rank-mode]")
+    .forEach((list) => updateSwapIndicatorsForList(list));
+};
+
+const findSwapCandidate = (type: string) => {
+  const rows = Array.from(document.querySelectorAll<HTMLElement>(`.row[data-type='${type}']`));
+  const signed = rows.filter((row) => row.classList.contains("is-signed"));
+  if (signed.length < signupLimit) return null;
+  const droppableSigned = signed.filter((row) => row.getAttribute("data-locked") !== "true");
+  if (!droppableSigned.length) return null;
+  const worstSigned = droppableSigned.reduce((worst, row) =>
+    compareRowPriority(row, worst) > 0 ? row : worst,
+  );
+  const candidates = rows.filter((row) => {
+    if (row.classList.contains("is-signed")) return false;
+    if (row.getAttribute("data-hidden-at")) return false;
+    return Boolean(row.getAttribute("data-requested-at"));
+  });
+  const eligible = candidates.filter((row) => compareRowPriority(row, worstSigned) < 0);
+  if (!eligible.length) return null;
+  return eligible.reduce((best, row) => (compareRowPriority(row, best) < 0 ? row : best));
+};
+
+const initRemoveHover = () => {
+  document.querySelectorAll<HTMLButtonElement>(".js-interest-action").forEach((button) => {
+    if (button.getAttribute("data-action") !== "remove") return;
+    if (button.disabled) return;
+    const type = button.getAttribute("data-type");
+    if (!type) return;
+    bindOnceEvent(button, "boundRemoveHoverIn", "mouseenter", () => {
+      clearSwapHighlights();
+      const candidate = findSwapCandidate(type);
+      if (candidate) candidate.classList.add("is-swap-target");
+    });
+    bindOnceEvent(button, "boundRemoveHoverOut", "mouseleave", () => {
+      clearSwapHighlights();
+    });
+    bindOnceEvent(button, "boundRemoveHoverClick", "click", () => {
+      clearSwapHighlights();
+    });
+  });
+};
+
 const getRankList = (listId: string) => document.getElementById(listId);
+
+let dragRow: HTMLElement | null = null;
+
+const ensureDragHandlers = (list: HTMLElement) => {
+  if (list.dataset.dragInit === "true") return;
+  list.dataset.dragInit = "true";
+
+  list.addEventListener("dragover", (event) => {
+    if (!dragRow) return;
+    if (list.getAttribute("data-rank-mode") !== "true") return;
+    event.preventDefault();
+    const target = (event.target as HTMLElement | null)?.closest<HTMLElement>(".row");
+    if (!target || target === dragRow) return;
+    const rows = Array.from(list.querySelectorAll<HTMLElement>(":scope > .row"));
+    const targetIndex = rows.indexOf(target);
+    const dragIndex = rows.indexOf(dragRow);
+    if (targetIndex === -1 || dragIndex === -1) return;
+    const rect = target.getBoundingClientRect();
+    const before = event.clientY < rect.top + rect.height / 2;
+    const insertIndex = before ? targetIndex : targetIndex + 1;
+    const insertBefore = rows[insertIndex] ?? null;
+    if (insertBefore === dragRow) return;
+    moveRowWithMap(dragRow, list, insertBefore);
+    updateSwapIndicatorsForList(list);
+  });
+
+  list.addEventListener("drop", (event) => {
+    if (!dragRow) return;
+    event.preventDefault();
+    dragRow.classList.remove("is-dragging");
+    dragRow = null;
+    updateSwapIndicatorsForList(list);
+  });
+};
+
+const configureDrag = (listId: string, enabled: boolean) => {
+  const list = getRankList(listId);
+  if (!list) return;
+  ensureDragHandlers(list);
+  list.querySelectorAll<HTMLElement>(":scope > .row").forEach((row) => {
+    row.draggable = enabled;
+    row.classList.toggle("is-draggable", enabled);
+    bindOnceEvent(row, "boundDragStart", "dragstart", (event) => {
+      if (list.getAttribute("data-rank-mode") !== "true") {
+        event.preventDefault();
+        return;
+      }
+      dragRow = row;
+      row.classList.add("is-dragging");
+      const dataTransfer = (event as DragEvent).dataTransfer;
+      if (dataTransfer) {
+        dataTransfer.effectAllowed = "move";
+        dataTransfer.setData("text/plain", row.getAttribute("data-id") ?? "");
+      }
+    });
+    bindOnceEvent(row, "boundDragEnd", "dragend", () => {
+      if (dragRow === row) dragRow = null;
+      row.classList.remove("is-dragging");
+    });
+  });
+};
 
 const setRankMode = (listId: string, enabled: boolean) => {
   const list = getRankList(listId);
   if (!list) return;
   list.setAttribute("data-rank-mode", enabled ? "true" : "false");
+  configureDrag(listId, enabled);
   const toggle = document.querySelector<HTMLButtonElement>(
     `.js-rank-toggle[data-target='${listId}']`,
   );
@@ -221,6 +419,8 @@ const setRankMode = (listId: string, enabled: boolean) => {
   if (toggle) toggle.classList.toggle("is-hidden", enabled);
   if (save) save.classList.toggle("is-hidden", !enabled);
   if (cancel) cancel.classList.toggle("is-hidden", !enabled);
+  updateSwapIndicatorsForList(list);
+  syncReorderActive();
 };
 
 const collectRankOrder = (listId: string) => {
@@ -293,31 +493,14 @@ const initRankActions = () => {
       } else if (direction === "down" && index < rows.length - 1) {
         moveRowWithMap(rows[index + 1], list, row);
       }
+      updateSwapIndicatorsForList(list);
     });
   });
-};
 
-const initSwapActions = () => {
-  document.querySelectorAll<HTMLButtonElement>(".js-swap-action").forEach((button) => {
-    bindOnce(button, "boundSwap", async (event) => {
-      event.preventDefault();
-      const action = button.getAttribute("data-action");
-      const swapId = button.getAttribute("data-swap-id");
-      if (!action || !swapId) return;
-      button.disabled = true;
-      try {
-        const response = await fetch(`/api/swaps/${encodeURIComponent(swapId)}/${action}`, {
-          method: "POST",
-        });
-        if (!response.ok) {
-          console.warn("Swap action failed.", await response.text());
-          return;
-        }
-        await refreshFromServer();
-      } finally {
-        button.disabled = false;
-      }
-    });
+  document.querySelectorAll<HTMLElement>(".list[data-rank-mode]").forEach((list) => {
+    const listId = list.getAttribute("id");
+    if (!listId) return;
+    configureDrag(listId, list.getAttribute("data-rank-mode") === "true");
   });
 };
 
@@ -342,11 +525,29 @@ const renderVisibilityLabel = (isHidden: boolean) => {
   `;
 };
 
-const updateInterestButton = (button: HTMLButtonElement, signed: boolean) => {
-  button.setAttribute("data-action", signed ? "remove" : "add");
-  button.textContent = signed ? "Remove" : "Signup";
-  button.classList.toggle("btn-success", !signed);
-  button.classList.toggle("btn-danger", signed);
+const updateInterestButton = (
+  button: HTMLButtonElement,
+  options: { signed: boolean; interested: boolean; locked?: boolean },
+) => {
+  const action = options.signed ? "remove" : options.interested ? "drop" : "add";
+  const label = options.signed ? "Remove" : options.interested ? "Drop" : "Interested";
+  button.setAttribute("data-action", action);
+  button.textContent = label;
+  button.classList.toggle("btn-success", action === "add");
+  button.classList.toggle("btn-danger", action === "remove");
+  button.classList.toggle("btn-muted", action === "drop");
+  if (action === "remove") {
+    button.disabled = Boolean(options.locked);
+  } else {
+    button.disabled = false;
+  }
+};
+
+const updateLockButton = (button: HTMLButtonElement, locked: boolean) => {
+  button.setAttribute("data-action", locked ? "unlock" : "lock");
+  button.textContent = locked ? "Locked" : "Lock";
+  button.classList.toggle("btn-primary", locked);
+  button.classList.toggle("btn-muted", !locked);
 };
 
 const sendInterestRequest = async (options: {
@@ -363,22 +564,30 @@ const sendInterestRequest = async (options: {
       {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action, confirm: action === "remove" }),
+        body: JSON.stringify({
+          action,
+          confirm: action === "remove",
+          keepInterested: false,
+        }),
       },
     );
     if (!response.ok) {
       console.warn("Interest request failed.", await response.text());
       return { ok: false, signed: null };
     }
-    const payload = (await response.json()) as { ok: boolean; signed?: boolean };
+    const payload = (await response.json()) as { ok: boolean; signed?: boolean; locked?: boolean };
     if (!payload.ok) {
       console.warn("Interest request failed.");
-      return { ok: false, signed: null };
+      return { ok: false, signed: null, locked: null };
     }
-    return { ok: true, signed: typeof payload.signed === "boolean" ? payload.signed : null };
+    return {
+      ok: true,
+      signed: typeof payload.signed === "boolean" ? payload.signed : null,
+      locked: typeof payload.locked === "boolean" ? payload.locked : null,
+    };
   } catch (error) {
     console.warn("Interest request failed.", error);
-    return { ok: false, signed: null };
+    return { ok: false, signed: null, locked: null };
   } finally {
     button.disabled = false;
   }
@@ -427,25 +636,23 @@ const initInterestActions = () => {
           cancelEvent.preventDefault();
           container.innerHTML = originalHtml;
           initInterestActions();
+          initLockActions();
+          initRemoveHover();
           initRankActions();
         });
 
         confirmButton.addEventListener("click", async (confirmEvent) => {
           confirmEvent.preventDefault();
+          confirmButton.textContent = "Removing…";
           confirmButton.disabled = true;
           cancelButton.disabled = true;
           const result = await sendInterestRequest({ button: confirmButton, action, type, id });
           if (result.ok && result.signed !== null) {
             container.innerHTML = originalHtml;
             initInterestActions();
+            initLockActions();
+            initRemoveHover();
             initRankActions();
-            const restored = container.querySelector<HTMLButtonElement>(".js-interest-action");
-            if (restored) {
-              updateInterestButton(restored, result.signed);
-              const row = restored.closest<HTMLElement>(".row");
-              row?.classList.toggle("is-signed", result.signed);
-              highlightNew();
-            }
             await refreshFromServer();
             return;
           }
@@ -457,12 +664,65 @@ const initInterestActions = () => {
         return;
       }
 
+      if (action === "add") {
+        button.dataset.labelOriginal = button.textContent ?? "";
+        button.textContent = "Interested…";
+        button.disabled = true;
+      }
+
       const result = await sendInterestRequest({ button, action, type, id });
       if (result.ok && result.signed !== null) {
         const row = button.closest<HTMLElement>(".row");
-        row?.classList.toggle("is-signed", result.signed);
-        updateInterestButton(button, result.signed);
+        const section = row?.closest<HTMLElement>(".section");
+        const viewGroup = section?.getAttribute("data-view-group");
+        const shouldUpdateInline = action === "remove" && viewGroup === "interested";
+        if (shouldUpdateInline) {
+          row?.classList.toggle("is-signed", result.signed);
+        }
+        if (action === "add") {
+          button.disabled = true;
+        }
         highlightNew();
+      }
+      if (!result.ok && action === "add") {
+        button.textContent = button.dataset.labelOriginal || "Interested";
+        button.disabled = false;
+      }
+      await refreshFromServer();
+    });
+  });
+};
+
+const initLockActions = () => {
+  document.querySelectorAll<HTMLButtonElement>(".js-lock-action").forEach((button) => {
+    bindOnce(button, "boundLock", async (event) => {
+      event.preventDefault();
+      const action = button.getAttribute("data-action");
+      const type = button.getAttribute("data-type");
+      const id = button.getAttribute("data-id");
+      if (!action || !type || !id) return;
+
+      const result = await sendInterestRequest({ button, action, type, id });
+      if (!result.ok || typeof result.locked !== "boolean") {
+        await refreshFromServer();
+        return;
+      }
+
+      updateLockButton(button, result.locked);
+      const row = button.closest<HTMLElement>(".row");
+      if (row) {
+        row.classList.toggle("is-locked", result.locked);
+        row.setAttribute("data-locked", result.locked ? "true" : "");
+      }
+      const removeButton = row?.querySelector<HTMLButtonElement>(
+        ".js-interest-action[data-action='remove']",
+      );
+      if (removeButton) {
+        updateInterestButton(removeButton, {
+          signed: true,
+          interested: true,
+          locked: result.locked,
+        });
       }
       await refreshFromServer();
     });
@@ -636,12 +896,12 @@ const initCarousel = () => {
 
 type FragmentPayload = {
   updatedAt: string | null;
+  lastScrapeAt: string | null;
   nextRefreshAt: number;
   rateLimitCount: number;
   rateLimitMonthly: number;
   sections: {
     hidden: string;
-    swaps: string;
     interested: string;
     wohnungen: string;
     planungsprojekte: string;
@@ -649,7 +909,6 @@ type FragmentPayload = {
 };
 
 let refreshPromise: Promise<void> | null = null;
-let holdRefreshTimer: number | null = null;
 
 const replaceSection = (id: string, html: string) => {
   const current = document.getElementById(id);
@@ -663,6 +922,7 @@ const replaceSection = (id: string, html: string) => {
 
 const applyFragments = (payload: FragmentPayload) => {
   document.body.setAttribute("data-updated-at", payload.updatedAt ?? "");
+  document.body.setAttribute("data-last-scrape-at", payload.lastScrapeAt ?? "");
   document.body.setAttribute("data-next-refresh", String(payload.nextRefreshAt));
 
   const rateCount = document.getElementById("rate-count");
@@ -671,7 +931,6 @@ const applyFragments = (payload: FragmentPayload) => {
   if (rateLimit) rateLimit.textContent = String(payload.rateLimitMonthly);
 
   replaceSection("hidden-section", payload.sections.hidden);
-  replaceSection("swap-section", payload.sections.swaps);
   replaceSection("interested-section", payload.sections.interested);
   replaceSection("wohnungen-section", payload.sections.wohnungen);
   replaceSection("planungsprojekte-section", payload.sections.planungsprojekte);
@@ -679,20 +938,22 @@ const applyFragments = (payload: FragmentPayload) => {
   initMapToggles();
   initViewToggles();
   initInterestActions();
+  initLockActions();
+  initRemoveHover();
   initEntryActions();
   initCarousel();
   initRankActions();
-  initSwapActions();
   updateCountdowns();
   updateRefreshCountdowns();
   highlightNew();
   updateRefreshLabel();
   updateNextRefreshLabel();
-  scheduleHoldRefresh();
-  applyHoldFade();
+  updateSwapIndicators();
+  syncReorderActive();
 };
 
 const refreshFromServer = async () => {
+  if (reorderActive) return;
   if (refreshPromise) return refreshPromise;
   refreshPromise = (async () => {
     try {
@@ -707,46 +968,6 @@ const refreshFromServer = async () => {
     }
   })();
   return refreshPromise;
-};
-
-const scheduleHoldRefresh = () => {
-  if (holdRefreshTimer) {
-    window.clearTimeout(holdRefreshTimer);
-    holdRefreshTimer = null;
-  }
-  const now = Date.now();
-  let earliest = Number.POSITIVE_INFINITY;
-  document.querySelectorAll<HTMLElement>(".row[data-hold-until]").forEach((row) => {
-    const holdUntil = row.getAttribute("data-hold-until");
-    if (!holdUntil) return;
-    const timestamp = new Date(holdUntil).getTime();
-    if (!Number.isFinite(timestamp)) return;
-    if (timestamp > now && timestamp < earliest) {
-      earliest = timestamp;
-    }
-  });
-  if (!Number.isFinite(earliest)) return;
-  const delay = Math.max(earliest - now + 50, 0);
-  holdRefreshTimer = window.setTimeout(() => {
-    void refreshFromServer();
-  }, delay);
-};
-
-const applyHoldFade = () => {
-  const now = Date.now();
-  document.querySelectorAll<HTMLElement>(".row.is-hold[data-hold-until]").forEach((row) => {
-    const holdUntil = row.getAttribute("data-hold-until");
-    if (!holdUntil) return;
-    const timestamp = new Date(holdUntil).getTime();
-    if (!Number.isFinite(timestamp)) return;
-    const remaining = Math.max(timestamp - now, 0);
-    if (remaining <= 0) {
-      row.classList.remove("is-hold");
-      row.style.removeProperty("--hold-ms");
-      return;
-    }
-    row.style.setProperty("--hold-ms", `${remaining}ms`);
-  });
 };
 
 const initEvents = () => {
@@ -773,6 +994,9 @@ const initEvents = () => {
         suppressReloadUntil = 0;
         return;
       }
+      if (reorderActive) {
+        return;
+      }
       void refreshFromServer();
     }
   };
@@ -794,19 +1018,19 @@ const init = () => {
     highlightNew();
     updateRefreshLabel();
     updateNextRefreshLabel();
-  }, 15000);
+  }, 1000);
   initMapToggles();
   initViewToggles();
   initInterestActions();
+  initLockActions();
+  initRemoveHover();
   initEntryActions();
   initCarousel();
   initRankActions();
-  initSwapActions();
   initEvents();
   syncViewWithLocation(true);
   window.addEventListener("popstate", () => syncViewWithLocation(true));
-  scheduleHoldRefresh();
-  applyHoldFade();
+  updateSwapIndicators();
 };
 
 document.addEventListener("DOMContentLoaded", init);

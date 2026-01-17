@@ -11,30 +11,30 @@ export type RenderOptions = {
 
 export type RenderFragments = {
   updatedAt: string | null;
+  lastScrapeAt: string | null;
   nextRefreshAt: number;
   rateLimitCount: number;
   rateLimitMonthly: number;
   sections: {
     hidden: string;
-    swaps: string;
     interested: string;
     wohnungen: string;
     planungsprojekte: string;
   };
 };
 
-const escapeHtml = (value: string) =>
-  value
+const escapeHtml = (value: string | number | null | undefined) =>
+  String(value ?? "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 
-const safeValue = (value: string | null | undefined, fallback = "-") =>
+const safeValue = (value: string | number | null | undefined, fallback = "-") =>
   escapeHtml(value ?? fallback);
 
-const safeAttribute = (value: string | null | undefined) => escapeHtml(value ?? "");
+const safeAttribute = (value: string | number | null | undefined) => escapeHtml(value ?? "");
 
 const formatTimeLeft = (iso: string | null) => {
   if (!iso) return null;
@@ -56,8 +56,34 @@ const formatRefreshLeft = (iso: string | null) => {
   return formatTimeLeft(iso);
 };
 
-const rankValue = (rank: number | null | undefined) =>
-  typeof rank === "number" ? rank : Number.POSITIVE_INFINITY;
+const getRequestedAtValue = (value: string | null | undefined) => {
+  if (!value) return Number.NEGATIVE_INFINITY;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
+};
+
+const getPriority = (item: {
+  interest?: { rank?: number | null; requestedAt?: string | null };
+}) => {
+  if (typeof item.interest?.rank === "number") {
+    return { bucket: 0, value: item.interest.rank };
+  }
+  return { bucket: 1, value: getRequestedAtValue(item.interest?.requestedAt) };
+};
+
+const comparePriority = (
+  left: { interest?: { rank?: number | null; requestedAt?: string | null } },
+  right: { interest?: { rank?: number | null; requestedAt?: string | null } },
+) => {
+  const leftPriority = getPriority(left);
+  const rightPriority = getPriority(right);
+  if (leftPriority.bucket !== rightPriority.bucket) {
+    return leftPriority.bucket - rightPriority.bucket;
+  }
+  if (leftPriority.value < rightPriority.value) return -1;
+  if (leftPriority.value > rightPriority.value) return 1;
+  return 0;
+};
 
 const cleanValue = (value: string | null) => {
   if (!value) return "-";
@@ -128,17 +154,20 @@ const renderPlanungsprojektRow = (
   const isHidden = Boolean(item.hiddenAt);
   const isSeen = Boolean(item.seenAt);
   const isInterested = Boolean(item.interest?.requestedAt);
-  const holdUntil = item.interest?.holdUntil ?? null;
-  const isHoldActive = holdUntil ? new Date(holdUntil).getTime() > Date.now() : false;
+  const isLocked = Boolean(item.flags.angemeldet && item.interest?.locked);
   const badges = renderBadges(
     [isSigned ? "Angemeldet" : "", !isSigned && isInterested ? "Waiting" : ""].filter(Boolean),
   );
-  const interestButtonLabel = isSigned ? "Remove" : "Signup";
-  const interestAction = isSigned ? "remove" : "add";
-  const interestButtonClass = isSigned ? "btn-danger" : "btn-success";
+  const interestButtonLabel = isSigned ? "Remove" : isInterested ? "Drop" : "Interested";
+  const interestAction = isSigned ? "remove" : isInterested ? "drop" : "add";
+  const interestButtonClass = isSigned ? "btn-danger" : isInterested ? "btn-muted" : "btn-success";
   const interestButton = item.id
-    ? `<button class="btn ${interestButtonClass} js-interest-action" data-action="${interestAction}" data-type="planungsprojekte" data-id="${safeAttribute(item.id)}">${interestButtonLabel}</button>`
+    ? `<button class="btn ${interestButtonClass} js-interest-action" data-action="${interestAction}" data-type="planungsprojekte" data-id="${safeAttribute(item.id)}"${isLocked ? " disabled" : ""}>${interestButtonLabel}</button>`
     : "";
+  const lockButton =
+    item.id && isSigned
+      ? `<button class="btn ${isLocked ? "btn-primary" : "btn-muted"} js-lock-action" data-action="${isLocked ? "unlock" : "lock"}" data-type="planungsprojekte" data-id="${safeAttribute(item.id)}">${isLocked ? "Locked" : "Lock"}</button>`
+      : "";
   const lageplan = item.detail?.lageplanUrl
     ? `<a class="btn" href="${safeAttribute(item.detail.lageplanUrl)}" target="_blank">Lageplan</a>`
     : "";
@@ -173,8 +202,8 @@ const renderPlanungsprojektRow = (
       `
     : "";
   const interestActionBlock =
-    interestButton || rankControls
-      ? `<div class="row-header-interest">${interestButton}${rankControls}</div>`
+    interestButton || lockButton || rankControls
+      ? `<div class="row-header-interest">${interestButton}${lockButton}${rankControls}</div>`
       : "";
   const visibilityLabel = renderVisibilityLabel(isHidden);
   const seenButton =
@@ -190,9 +219,9 @@ const renderPlanungsprojektRow = (
   if (isSigned) rowClasses.push("is-signed");
   if (isSeen) rowClasses.push("is-seen");
   if (!isSeen) rowClasses.push("is-new");
-  if (isHoldActive) rowClasses.push("is-hold");
+  if (isLocked) rowClasses.push("is-locked");
   return `
-    <div class="${rowClasses.join(" ")}" data-type="planungsprojekte" data-id="${safeAttribute(item.id ?? "")}" data-first-seen="${item.firstSeenAt}" data-seen-at="${safeAttribute(item.seenAt ?? "")}" data-hidden-at="${safeAttribute(item.hiddenAt ?? "")}" data-hold-until="${safeAttribute(holdUntil ?? "")}">
+    <div class="${rowClasses.join(" ")}" data-type="planungsprojekte" data-id="${safeAttribute(item.id ?? "")}" data-first-seen="${item.firstSeenAt}" data-seen-at="${safeAttribute(item.seenAt ?? "")}" data-hidden-at="${safeAttribute(item.hiddenAt ?? "")}" data-requested-at="${safeAttribute(item.interest?.requestedAt ?? "")}" data-rank="${safeAttribute(item.interest?.rank ?? "")}" data-maxlimit="${item.flags.maxlimit ? "true" : "false"}" data-locked="${isLocked ? "true" : ""}">
       ${seenButton}
       ${image}
       <div class="content">
@@ -201,6 +230,7 @@ const renderPlanungsprojektRow = (
             <div class="title">${title}</div>
             ${titleMeta}
             ${badgesBlock}
+            <span class="swap-indicator"></span>
           </div>
           <div class="row-header-actions">
             ${interestActionBlock}
@@ -252,8 +282,7 @@ const renderWohnungRow = (item: WohnungRecord, options: RenderRowOptions = {}) =
   const isHidden = Boolean(item.hiddenAt);
   const isSeen = Boolean(item.seenAt);
   const isInterested = Boolean(item.interest?.requestedAt);
-  const holdUntil = item.interest?.holdUntil ?? null;
-  const isHoldActive = holdUntil ? new Date(holdUntil).getTime() > Date.now() : false;
+  const isLocked = Boolean(item.flags.angemeldet && item.interest?.locked);
   const badges = renderBadges(
     [isSigned ? "Angemeldet" : "", !isSigned && isInterested ? "Waiting" : ""].filter(Boolean),
   );
@@ -262,12 +291,16 @@ const renderWohnungRow = (item: WohnungRecord, options: RenderRowOptions = {}) =
     !isSeen && item.id
       ? `<button class="seen-toggle js-entry-action" data-action="toggleSeen" data-type="wohnungen" data-id="${safeAttribute(item.id)}" aria-label="Mark seen">✓</button>`
       : "";
-  const interestButtonLabel = isSigned ? "Remove" : "Signup";
-  const interestAction = isSigned ? "remove" : "add";
-  const interestButtonClass = isSigned ? "btn-danger" : "btn-success";
+  const interestButtonLabel = isSigned ? "Remove" : isInterested ? "Drop" : "Interested";
+  const interestAction = isSigned ? "remove" : isInterested ? "drop" : "add";
+  const interestButtonClass = isSigned ? "btn-danger" : isInterested ? "btn-muted" : "btn-success";
   const interestButton = item.id
-    ? `<button class="btn ${interestButtonClass} js-interest-action" data-action="${interestAction}" data-type="wohnungen" data-id="${safeAttribute(item.id)}">${interestButtonLabel}</button>`
+    ? `<button class="btn ${interestButtonClass} js-interest-action" data-action="${interestAction}" data-type="wohnungen" data-id="${safeAttribute(item.id)}"${isLocked ? " disabled" : ""}>${interestButtonLabel}</button>`
     : "";
+  const lockButton =
+    item.id && isSigned
+      ? `<button class="btn ${isLocked ? "btn-primary" : "btn-muted"} js-lock-action" data-action="${isLocked ? "unlock" : "lock"}" data-type="wohnungen" data-id="${safeAttribute(item.id)}">${isLocked ? "Locked" : "Lock"}</button>`
+      : "";
   const entryActions = item.id
     ? `
         <button class="btn btn-muted js-entry-action" data-action="toggleHidden" data-type="wohnungen" data-id="${safeAttribute(item.id)}" aria-label="${isHidden ? "Unhide" : "Hide"}">${visibilityLabel}</button>
@@ -314,17 +347,17 @@ const renderWohnungRow = (item: WohnungRecord, options: RenderRowOptions = {}) =
       `
     : "";
   const interestActionBlock =
-    interestButton || rankControls
-      ? `<div class="row-header-interest">${interestButton}${rankControls}</div>`
+    interestButton || lockButton || rankControls
+      ? `<div class="row-header-interest">${interestButton}${lockButton}${rankControls}</div>`
       : "";
 
   const rowClasses = ["row"];
   if (isSigned) rowClasses.push("is-signed");
   if (isSeen) rowClasses.push("is-seen");
   if (!isSeen) rowClasses.push("is-new");
-  if (isHoldActive) rowClasses.push("is-hold");
+  if (isLocked) rowClasses.push("is-locked");
   return `
-    <div class="${rowClasses.join(" ")}" data-type="wohnungen" data-id="${safeAttribute(item.id ?? "")}" data-first-seen="${item.firstSeenAt}" data-seen-at="${safeAttribute(item.seenAt ?? "")}" data-hidden-at="${safeAttribute(item.hiddenAt ?? "")}" data-hold-until="${safeAttribute(holdUntil ?? "")}">
+    <div class="${rowClasses.join(" ")}" data-type="wohnungen" data-id="${safeAttribute(item.id ?? "")}" data-first-seen="${item.firstSeenAt}" data-seen-at="${safeAttribute(item.seenAt ?? "")}" data-hidden-at="${safeAttribute(item.hiddenAt ?? "")}" data-requested-at="${safeAttribute(item.interest?.requestedAt ?? "")}" data-rank="${safeAttribute(item.interest?.rank ?? "")}" data-maxlimit="${item.flags.maxlimit ? "true" : "false"}" data-locked="${isLocked ? "true" : ""}">
       ${seenButton}
       ${thumb}
       <div class="content">
@@ -333,6 +366,7 @@ const renderWohnungRow = (item: WohnungRecord, options: RenderRowOptions = {}) =
             <div class="title">${safeValue(item.postalCode ?? "")} ${safeValue(item.address ?? "")}</div>
             ${titleMeta}
             ${badgesBlock}
+            <span class="swap-indicator"></span>
           </div>
           <div class="row-header-actions">
             ${interestActionBlock}
@@ -399,78 +433,35 @@ const renderSubsection = (title: string, type: string, listId: string, items: st
   `;
 };
 
-const renderSwapSection = (state: FlatfinderState): { html: string; count: number } => {
-  const rows = state.pendingSwaps.map((swap) => {
-    const collection = swap.type === "wohnungen" ? state.wohnungen : state.planungsprojekte;
-    const target = collection.find((entry) => entry.id === swap.targetId);
-    const drop = collection.find((entry) => entry.id === swap.dropId);
-    const targetTitle =
-      target && "postalCode" in target
-        ? `${safeValue(target.postalCode ?? "")} ${safeValue(target.address ?? "")}`
-        : target && "address" in target
-          ? `${safeValue(target.postalCode ?? "")}, ${safeValue(target.address ?? "")}`
-          : safeValue(swap.targetId);
-    const dropTitle =
-      drop && "postalCode" in drop
-        ? `${safeValue(drop.postalCode ?? "")} ${safeValue(drop.address ?? "")}`
-        : drop && "address" in drop
-          ? `${safeValue(drop.postalCode ?? "")}, ${safeValue(drop.address ?? "")}`
-          : safeValue(swap.dropId);
-    return `
-      <div class="row swap-row" data-swap-id="${safeAttribute(swap.id)}">
-        <div class="content">
-          <div class="title">Swap ${dropTitle} → ${targetTitle}</div>
-          <div class="meta">Type: ${escapeHtml(swap.type)}</div>
-        </div>
-        <div class="actions">
-          <button class="btn btn-danger js-swap-action" data-action="confirm" data-swap-id="${safeAttribute(swap.id)}">Confirm swap</button>
-          <button class="btn btn-muted js-swap-action" data-action="cancel" data-swap-id="${safeAttribute(swap.id)}">Cancel</button>
-        </div>
-      </div>
-    `;
-  });
-  const content = rows.length ? rows.join("\n") : '<div class="empty">No pending swaps</div>';
-  return {
-    html: `
-      <div class="section" id="swap-section" data-view-group="interested">
-        <h2>Pending swaps (${rows.length})</h2>
-        <div class="list" id="swap-list">${content}</div>
-      </div>
-    `,
-    count: rows.length,
-  };
-};
-
 const sortSeenLast = <T extends { seenAt?: string | null }>(items: T[]) => {
   const unseen = items.filter((item) => !item.seenAt);
   const seen = items.filter((item) => item.seenAt);
   return [...unseen, ...seen];
 };
 
-const sortByRank = <T extends { lastSeenAt: string; interest?: { rank?: number | null } }>(
+const sortByRank = <
+  T extends {
+    lastSeenAt: string;
+    interest?: { rank?: number | null; requestedAt?: string | null };
+  },
+>(
   items: T[],
 ) =>
   [...items].sort((a, b) => {
-    const rankA = rankValue(a.interest?.rank);
-    const rankB = rankValue(b.interest?.rank);
-    if (rankA !== rankB) return rankA - rankB;
+    const priority = comparePriority(a, b);
+    if (priority !== 0) return priority;
     return b.lastSeenAt.localeCompare(a.lastSeenAt);
   });
 
 const buildSections = (state: FlatfinderState) => {
-  const nowMs = Date.now();
-  const isHoldActive = (holdUntil?: string | null) =>
-    holdUntil ? new Date(holdUntil).getTime() > nowMs : false;
   const isInterested = (item: {
     flags: { angemeldet: boolean };
     interest?: { requestedAt?: string | null };
   }) => Boolean(item.flags.angemeldet || item.interest?.requestedAt);
 
-  const visibleWohnungen = state.wohnungen.filter(
-    (item) => !item.hiddenAt && (!isInterested(item) || isHoldActive(item.interest?.holdUntil)),
-  );
+  const visibleWohnungen = state.wohnungen.filter((item) => !item.hiddenAt && !isInterested(item));
   const visiblePlanungsprojekte = state.planungsprojekte.filter(
-    (item) => !item.hiddenAt && (!isInterested(item) || isHoldActive(item.interest?.holdUntil)),
+    (item) => !item.hiddenAt && !isInterested(item),
   );
   const interestedWohnungen = state.wohnungen.filter(
     (item) => !item.hiddenAt && isInterested(item),
@@ -514,8 +505,6 @@ const buildSections = (state: FlatfinderState) => {
   const hiddenCount = hiddenItems.length;
   const wohnungenCount = wohnungen.length;
   const planungsprojekteCount = planungsprojekte.length;
-  const swapSection = renderSwapSection(state);
-
   const interestedSection = `
     <div class="section" id="interested-section" data-view-group="interested">
       <h2>Interested</h2>
@@ -536,7 +525,6 @@ const buildSections = (state: FlatfinderState) => {
 
   return {
     hiddenSection: renderHiddenSection(hiddenRows, hiddenCount),
-    swapSection: swapSection.html,
     interestedSection,
     wohnungenSection: renderSection(
       `Wohnungen (${wohnungenCount})`,
@@ -555,7 +543,6 @@ const buildSections = (state: FlatfinderState) => {
     hiddenCount,
     wohnungenCount,
     planungsprojekteCount,
-    swapCount: swapSection.count,
   };
 };
 
@@ -566,12 +553,12 @@ export const renderFragments = (
   const sections = buildSections(state);
   return {
     updatedAt: state.updatedAt ?? null,
+    lastScrapeAt: state.lastScrapeAt ?? null,
     nextRefreshAt: options.nextRefreshAt,
     rateLimitCount: state.rateLimit.count,
     rateLimitMonthly,
     sections: {
       hidden: sections.hiddenSection,
-      swaps: sections.swapSection,
       interested: sections.interestedSection,
       wohnungen: sections.wohnungenSection,
       planungsprojekte: sections.planungsprojekteSection,
@@ -583,6 +570,7 @@ export const renderPage = (state: FlatfinderState, options: RenderOptions) => {
   const sections = buildSections(state);
 
   const updatedAt = state.updatedAt ?? "";
+  const lastScrapeAt = state.lastScrapeAt ?? "";
 
   return `
     <!doctype html>
@@ -594,12 +582,12 @@ export const renderPage = (state: FlatfinderState, options: RenderOptions) => {
         <link rel="stylesheet" href="/app.css" />
         <script src="/app.js" type="module" defer></script>
       </head>
-      <body data-updated-at="${updatedAt}" data-next-refresh="${options.nextRefreshAt}" data-view="root">
+      <body data-updated-at="${updatedAt}" data-last-scrape-at="${lastScrapeAt}" data-next-refresh="${options.nextRefreshAt}" data-view="root">
         <div class="header">
           <div class="header-row">
             <h1>Flatfinder</h1>
             <div class="status-line">
-              Last refresh: <span id="last-refresh" title="${updatedAt || "-"}"></span>, next refresh: <span id="next-refresh"></span>, rate <span id="rate-count">${state.rateLimit.count}</span>/<span id="rate-limit">${rateLimitMonthly}</span>
+              Last refresh: <span id="last-refresh" title="${lastScrapeAt || "-"}"></span>, next refresh: <span id="next-refresh"></span>, rate <span id="rate-count">${state.rateLimit.count}</span>/<span id="rate-limit">${rateLimitMonthly}</span>
             </div>
           </div>
           <div class="header-divider"></div>
@@ -611,7 +599,6 @@ export const renderPage = (state: FlatfinderState, options: RenderOptions) => {
         </div>
 
         ${sections.hiddenSection}
-        ${sections.swapSection}
         ${sections.interestedSection}
         ${sections.wohnungenSection}
         ${sections.planungsprojekteSection}
