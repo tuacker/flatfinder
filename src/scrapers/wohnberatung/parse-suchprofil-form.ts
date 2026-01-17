@@ -22,7 +22,7 @@ export const parseSuchprofilForm = (html: string): SuchprofilForm => {
     const node = $(el);
     const name = node.attr("name");
     if (!name) return;
-    if (node.is(":disabled") || node.attr("disabled") !== undefined) return;
+    if (node.is(":disabled")) return;
 
     const tag = el.tagName.toLowerCase();
     const type = (node.attr("type") ?? "text").toLowerCase();

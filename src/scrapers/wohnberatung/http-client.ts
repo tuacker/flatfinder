@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import { storageStatePath } from "./config.js";
+import { baseUrl, storageStatePath } from "./config.js";
 
 export type HttpClient = {
   fetchHtml: (url: string, options?: RequestInit) => Promise<string>;
@@ -22,18 +22,18 @@ const isCookieForHost = (cookie: StoredCookie, host: string) => {
   return host === domain || host.endsWith(`.${domain}`);
 };
 
-const buildCookieHeader = async (url: string) => {
+const buildCookieHeader = async () => {
   const data = await fs.readFile(storageStatePath, "utf8");
   const state = JSON.parse(data) as StorageState;
-  const host = new URL(url).hostname;
+  const host = new URL(baseUrl).hostname;
   const cookies = state.cookies
     .filter((cookie) => isCookieForHost(cookie, host))
     .map((cookie) => `${cookie.name}=${cookie.value}`);
   return cookies.join("; ");
 };
 
-export const createHttpClient = async (baseUrl: string): Promise<HttpClient> => {
-  const cookieHeader = await buildCookieHeader(baseUrl);
+export const createHttpClient = async (): Promise<HttpClient> => {
+  const cookieHeader = await buildCookieHeader();
 
   const buildHeaders = (extra?: HeadersInit) => {
     const headers = new Headers(extra);

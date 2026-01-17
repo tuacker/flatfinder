@@ -39,14 +39,6 @@ const absoluteUrl = (value: string | null) => {
   return new URL(value.replace(/&amp;/g, "&"), baseUrl).toString();
 };
 
-const parseFlags = (className: string | undefined | null) => {
-  const classList = (className ?? "").split(/\s+/);
-  const has = (flag: string) => classList.includes(flag);
-  return {
-    angemeldet: has("angemeldet-1"),
-  };
-};
-
 export const parseWohnungenList = (html: string): WohnungListItem[] => {
   const $ = load(html);
 
@@ -56,6 +48,7 @@ export const parseWohnungenList = (html: string): WohnungListItem[] => {
     const entry = $(el);
     const link = entry.find("a[href*='?page=wohnung']").first();
     const href = link.attr("href") ?? null;
+    const url = absoluteUrl(href);
 
     const imageSrc = entry.find("img.media-object").first().attr("src") ?? null;
 
@@ -74,13 +67,14 @@ export const parseWohnungenList = (html: string): WohnungListItem[] => {
     const equity = normalize(entry.find("li:contains('Eigenmittel')").text());
     const foerderungstyp = normalize(entry.find("li[title^='Förderungstyp']").text());
     const interessentenText = normalize(entry.find(".text-success").text());
+    const classList = (entry.attr("class") ?? "").split(/\s+/);
 
     const countdown = entry.find(".registration_countdown span[data-enddate]").attr("data-enddate");
     const registrationEnd = countdown ? new Date(Number(countdown)).toISOString() : null;
 
     items.push({
-      id: href ? new URL(absoluteUrl(href)!).searchParams.get("id") : null,
-      url: absoluteUrl(href),
+      id: url ? new URL(url).searchParams.get("id") : null,
+      url,
       thumbnailUrl: absoluteUrl(imageSrc),
       postalCode,
       address,
@@ -91,7 +85,9 @@ export const parseWohnungenList = (html: string): WohnungListItem[] => {
       foerderungstyp,
       interessenten: parseNumber(interessentenText),
       registrationEnd,
-      flags: parseFlags(entry.attr("class")),
+      flags: {
+        angemeldet: classList.includes("angemeldet-1"),
+      },
     });
   });
 

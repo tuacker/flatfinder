@@ -37,15 +37,6 @@ const parseNumber = (value: string | null) => {
   return Number(match.join(""));
 };
 
-const parseFlags = (className: string | undefined | null) => {
-  const classList = (className ?? "").split(/\s+/);
-  const has = (flag: string) => classList.includes(flag);
-  return {
-    angemeldet: has("angemeldet-1"),
-    maxlimit: has("maxlimit-1"),
-  };
-};
-
 export const parsePlanungsprojekte = (html: string): Planungsprojekt[] => {
   const $ = load(html);
 
@@ -55,6 +46,7 @@ export const parsePlanungsprojekte = (html: string): Planungsprojekt[] => {
     const entry = $(el);
     const link = entry.find("a[href*='?page=projekt']").first();
     const href = link.attr("href") ?? null;
+    const url = absoluteUrl(href);
 
     const imageSrc = entry.find("img.media-object").first().attr("src") ?? null;
     const spans = entry.find("h4.media-heading span");
@@ -64,17 +56,21 @@ export const parsePlanungsprojekte = (html: string): Planungsprojekt[] => {
     const bezugsfertigText = normalize(entry.find("li[title^='Bezugsfertig']").first().text());
     const foerderungText = normalize(entry.find("li[title^='Förderungstyp']").first().text());
     const interessentenText = normalize(entry.find("li.meta-interessenten").text());
+    const classList = (entry.attr("class") ?? "").split(/\s+/);
 
     items.push({
-      id: href ? new URL(absoluteUrl(href)!).searchParams.get("id") : null,
-      url: absoluteUrl(href),
+      id: url ? new URL(url).searchParams.get("id") : null,
+      url,
       imageUrl: absoluteUrl(imageSrc),
       postalCode,
       address,
       bezugsfertig: bezugsfertigText?.replace(/^Bezugsfertig:\s*/i, "") ?? null,
       foerderungstyp: foerderungText,
       interessenten: parseNumber(interessentenText),
-      flags: parseFlags(entry.attr("class")),
+      flags: {
+        angemeldet: classList.includes("angemeldet-1"),
+        maxlimit: classList.includes("maxlimit-1"),
+      },
     });
   });
 
