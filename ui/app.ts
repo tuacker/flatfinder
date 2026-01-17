@@ -9,6 +9,15 @@ const formatTimeLeft = (iso: string | null) => {
   return `${hours}h ${minutes}m`;
 };
 
+const formatRefreshLeft = (iso: string | null) => {
+  if (!iso) return null;
+  const diffMs = new Date(iso).getTime() - Date.now();
+  if (Number.isNaN(diffMs)) return null;
+  if (diffMs <= 0) return "now";
+  if (diffMs < 60000) return `${Math.ceil(diffMs / 1000)}s`;
+  return formatTimeLeft(iso);
+};
+
 const updateCountdowns = () => {
   document.querySelectorAll<HTMLElement>(".time[data-end]").forEach((node) => {
     const end = node.getAttribute("data-end");
@@ -19,28 +28,20 @@ const updateCountdowns = () => {
   });
 };
 
+const updateRefreshCountdowns = () => {
+  document.querySelectorAll<HTMLElement>(".title-meta.refresh[data-refresh-at]").forEach((node) => {
+    const nextAt = node.getAttribute("data-refresh-at");
+    const formatted = formatRefreshLeft(nextAt);
+    if (formatted) {
+      node.textContent = `refresh ${formatted}`;
+    }
+  });
+};
+
 const highlightNew = () => {
-  const now = Date.now();
-  const windowMs = 24 * 60 * 60 * 1000;
-  document.querySelectorAll<HTMLElement>(".row[data-first-seen]").forEach((row) => {
-    if (row.classList.contains("is-signed")) {
-      row.classList.remove("is-new");
-      return;
-    }
+  document.querySelectorAll<HTMLElement>(".row[data-seen-at]").forEach((row) => {
     const seenAt = row.getAttribute("data-seen-at");
-    const hiddenAt = row.getAttribute("data-hidden-at");
-    if (seenAt || hiddenAt) {
-      row.classList.remove("is-new");
-      return;
-    }
-    const firstSeen = row.getAttribute("data-first-seen");
-    if (!firstSeen) return;
-    const diff = now - new Date(firstSeen).getTime();
-    if (diff <= windowMs) {
-      row.classList.add("is-new");
-    } else {
-      row.classList.remove("is-new");
-    }
+    row.classList.toggle("is-new", !seenAt);
   });
 };
 
@@ -50,6 +51,11 @@ const updateRefreshLabel = () => {
   if (!label || !updatedAt) return;
   const diffMs = Date.now() - new Date(updatedAt).getTime();
   if (Number.isNaN(diffMs)) return;
+  if (diffMs < 0) {
+    label.textContent = "just now";
+    label.title = updatedAt;
+    return;
+  }
   const minutes = Math.floor(diffMs / 60000);
   const hours = Math.floor(minutes / 60);
   const value = hours > 0 ? `${hours}h ${minutes % 60}m` : `${minutes}m`;
@@ -92,17 +98,59 @@ const initMapToggles = () => {
   });
 };
 
-const initHiddenToggle = () => {
-  const button = document.querySelector<HTMLButtonElement>(".js-toggle-hidden");
-  if (!button) return;
-  bindOnce(button, "boundHidden", (event) => {
-    event.preventDefault();
-    const target = button.getAttribute("data-target");
-    if (!target) return;
-    const container = document.getElementById(target);
-    if (!container) return;
-    container.classList.toggle("is-hidden");
+type ViewName = "root" | "hidden" | "interested";
+let currentView: ViewName = "root";
+
+const clearHoldOnLeaveRoot = async () => {
+  try {
+    const response = await fetch("/api/interest/hold/clear", { method: "POST" });
+    if (!response.ok) return;
+  } catch {
+    return;
+  }
+  await refreshFromServer();
+};
+
+const resolveView = (pathname: string): { view: ViewName; path: string } => {
+  const trimmed = pathname.replace(/\/+$/, "") || "/";
+  if (trimmed === "/hidden") return { view: "hidden", path: "/hidden" };
+  if (trimmed === "/interested") return { view: "interested", path: "/interested" };
+  return { view: "root", path: "/" };
+};
+
+const setView = (view: ViewName, options: { replace?: boolean } = {}) => {
+  const previous = currentView;
+  currentView = view;
+  document.body.setAttribute("data-view", view);
+  document.querySelectorAll<HTMLButtonElement>(".js-view-toggle").forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.view === view);
   });
+  if (previous === "root" && view !== "root") {
+    void clearHoldOnLeaveRoot();
+  }
+  const targetPath = view === "root" ? "/" : `/${view}`;
+  if (window.location.pathname === targetPath) return;
+  if (options.replace) {
+    window.history.replaceState({ view }, "", targetPath);
+  } else {
+    window.history.pushState({ view }, "", targetPath);
+  }
+};
+
+const initViewToggles = () => {
+  document.querySelectorAll<HTMLButtonElement>(".js-view-toggle").forEach((button) => {
+    bindOnce(button, "boundView", (event) => {
+      event.preventDefault();
+      const view = button.dataset.view as ViewName | undefined;
+      if (!view) return;
+      setView(view);
+    });
+  });
+};
+
+const syncViewWithLocation = (replace: boolean) => {
+  const resolved = resolveView(window.location.pathname);
+  setView(resolved.view, { replace });
 };
 
 let suppressReloadUntil = 0;
@@ -155,6 +203,143 @@ const updateHiddenCount = () => {
   const count = document.querySelectorAll("#hidden-list > .row").length;
   const label = document.getElementById("hidden-count");
   if (label) label.textContent = String(count);
+};
+
+const getRankList = (listId: string) => document.getElementById(listId);
+
+const setRankMode = (listId: string, enabled: boolean) => {
+  const list = getRankList(listId);
+  if (!list) return;
+  list.setAttribute("data-rank-mode", enabled ? "true" : "false");
+  const toggle = document.querySelector<HTMLButtonElement>(
+    `.js-rank-toggle[data-target='${listId}']`,
+  );
+  const save = document.querySelector<HTMLButtonElement>(`.js-rank-save[data-target='${listId}']`);
+  const cancel = document.querySelector<HTMLButtonElement>(
+    `.js-rank-cancel[data-target='${listId}']`,
+  );
+  if (toggle) toggle.classList.toggle("is-hidden", enabled);
+  if (save) save.classList.toggle("is-hidden", !enabled);
+  if (cancel) cancel.classList.toggle("is-hidden", !enabled);
+};
+
+const collectRankOrder = (listId: string) => {
+  const list = getRankList(listId);
+  if (!list) return [];
+  return Array.from(list.querySelectorAll<HTMLElement>(":scope > .row"))
+    .map((row) => row.getAttribute("data-id") ?? "")
+    .filter(Boolean);
+};
+
+const initRankActions = () => {
+  document.querySelectorAll<HTMLButtonElement>(".js-rank-toggle").forEach((button) => {
+    bindOnce(button, "boundRankToggle", (event) => {
+      event.preventDefault();
+      const listId = button.getAttribute("data-target");
+      if (!listId) return;
+      setRankMode(listId, true);
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>(".js-rank-cancel").forEach((button) => {
+    bindOnce(button, "boundRankCancel", async (event) => {
+      event.preventDefault();
+      const listId = button.getAttribute("data-target");
+      if (!listId) return;
+      setRankMode(listId, false);
+      await refreshFromServer();
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>(".js-rank-save").forEach((button) => {
+    bindOnce(button, "boundRankSave", async (event) => {
+      event.preventDefault();
+      const listId = button.getAttribute("data-target");
+      const type = button.getAttribute("data-type");
+      if (!listId || !type) return;
+      const order = collectRankOrder(listId);
+      button.disabled = true;
+      try {
+        const response = await fetch(`/api/rank/${encodeURIComponent(type)}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ order }),
+        });
+        if (!response.ok) {
+          console.warn("Rank save failed.", await response.text());
+          return;
+        }
+        setRankMode(listId, false);
+        await refreshFromServer();
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>(".js-rank-move").forEach((button) => {
+    bindOnce(button, "boundRankMove", (event) => {
+      event.preventDefault();
+      const direction = button.getAttribute("data-direction");
+      const row = button.closest<HTMLElement>(".row");
+      const list = row?.parentElement;
+      if (!direction || !row || !list) return;
+      if (list.getAttribute("data-rank-mode") !== "true") return;
+      const rows = Array.from(list.querySelectorAll<HTMLElement>(":scope > .row"));
+      const index = rows.indexOf(row);
+      if (index < 0) return;
+      if (direction === "up" && index > 0) {
+        moveRowWithMap(row, list, rows[index - 1]);
+      } else if (direction === "down" && index < rows.length - 1) {
+        moveRowWithMap(rows[index + 1], list, row);
+      }
+    });
+  });
+};
+
+const initSwapActions = () => {
+  document.querySelectorAll<HTMLButtonElement>(".js-swap-action").forEach((button) => {
+    bindOnce(button, "boundSwap", async (event) => {
+      event.preventDefault();
+      const action = button.getAttribute("data-action");
+      const swapId = button.getAttribute("data-swap-id");
+      if (!action || !swapId) return;
+      button.disabled = true;
+      try {
+        const response = await fetch(`/api/swaps/${encodeURIComponent(swapId)}/${action}`, {
+          method: "POST",
+        });
+        if (!response.ok) {
+          console.warn("Swap action failed.", await response.text());
+          return;
+        }
+        await refreshFromServer();
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+};
+
+const renderVisibilityLabel = (isHidden: boolean) => {
+  const eyeIcon = `
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"></path>
+      <circle cx="12" cy="12" r="3"></circle>
+    </svg>
+  `;
+  const eyeOffIcon = `
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M1 12s4-7 11-7c2.2 0 4.1.5 5.7 1.4"></path>
+      <path d="M4.3 14.6A12.3 12.3 0 0 0 12 19c7 0 11-7 11-7a21.8 21.8 0 0 0-3.3-4.2"></path>
+      <path d="M9.9 9.9a3 3 0 0 1 4.2 4.2"></path>
+      <path d="M1 1l22 22"></path>
+    </svg>
+  `;
+  return `
+    <span class="icon" aria-hidden="true">${isHidden ? eyeOffIcon : eyeIcon}</span>
+    <span class="sr-only">${isHidden ? "Hidden" : "Visible"}</span>
+  `;
 };
 
 const updateInterestButton = (button: HTMLButtonElement, signed: boolean) => {
@@ -242,6 +427,7 @@ const initInterestActions = () => {
           cancelEvent.preventDefault();
           container.innerHTML = originalHtml;
           initInterestActions();
+          initRankActions();
         });
 
         confirmButton.addEventListener("click", async (confirmEvent) => {
@@ -252,6 +438,7 @@ const initInterestActions = () => {
           if (result.ok && result.signed !== null) {
             container.innerHTML = originalHtml;
             initInterestActions();
+            initRankActions();
             const restored = container.querySelector<HTMLButtonElement>(".js-interest-action");
             if (restored) {
               updateInterestButton(restored, result.signed);
@@ -264,6 +451,7 @@ const initInterestActions = () => {
           }
           container.innerHTML = originalHtml;
           initInterestActions();
+          initRankActions();
         });
 
         return;
@@ -326,16 +514,16 @@ const initEntryActions = () => {
         row.setAttribute("data-seen-at", seenAt ?? "");
         row.setAttribute("data-hidden-at", hiddenAt ?? "");
         row.classList.toggle("is-seen", Boolean(seenAt));
+        row.classList.toggle("is-new", !seenAt);
 
-        row
-          .querySelectorAll<HTMLButtonElement>(".js-entry-action[data-action='toggleSeen']")
-          .forEach((btn) => {
-            btn.textContent = seenAt ? "Unseen" : "Seen";
-          });
+        row.querySelectorAll<HTMLButtonElement>(".seen-toggle").forEach((btn) => {
+          btn.classList.toggle("is-hidden", Boolean(seenAt));
+        });
         row
           .querySelectorAll<HTMLButtonElement>(".js-entry-action[data-action='toggleHidden']")
           .forEach((btn) => {
-            btn.textContent = hiddenAt ? "Unhide" : "Hide";
+            btn.innerHTML = renderVisibilityLabel(Boolean(hiddenAt));
+            btn.setAttribute("aria-label", hiddenAt ? "Unhide" : "Hide");
           });
 
         const hiddenList = document.getElementById("hidden-list");
@@ -453,12 +641,15 @@ type FragmentPayload = {
   rateLimitMonthly: number;
   sections: {
     hidden: string;
+    swaps: string;
+    interested: string;
     wohnungen: string;
     planungsprojekte: string;
   };
 };
 
 let refreshPromise: Promise<void> | null = null;
+let holdRefreshTimer: number | null = null;
 
 const replaceSection = (id: string, html: string) => {
   const current = document.getElementById(id);
@@ -480,18 +671,25 @@ const applyFragments = (payload: FragmentPayload) => {
   if (rateLimit) rateLimit.textContent = String(payload.rateLimitMonthly);
 
   replaceSection("hidden-section", payload.sections.hidden);
+  replaceSection("swap-section", payload.sections.swaps);
+  replaceSection("interested-section", payload.sections.interested);
   replaceSection("wohnungen-section", payload.sections.wohnungen);
   replaceSection("planungsprojekte-section", payload.sections.planungsprojekte);
 
   initMapToggles();
-  initHiddenToggle();
+  initViewToggles();
   initInterestActions();
   initEntryActions();
   initCarousel();
+  initRankActions();
+  initSwapActions();
   updateCountdowns();
+  updateRefreshCountdowns();
   highlightNew();
   updateRefreshLabel();
   updateNextRefreshLabel();
+  scheduleHoldRefresh();
+  applyHoldFade();
 };
 
 const refreshFromServer = async () => {
@@ -509,6 +707,46 @@ const refreshFromServer = async () => {
     }
   })();
   return refreshPromise;
+};
+
+const scheduleHoldRefresh = () => {
+  if (holdRefreshTimer) {
+    window.clearTimeout(holdRefreshTimer);
+    holdRefreshTimer = null;
+  }
+  const now = Date.now();
+  let earliest = Number.POSITIVE_INFINITY;
+  document.querySelectorAll<HTMLElement>(".row[data-hold-until]").forEach((row) => {
+    const holdUntil = row.getAttribute("data-hold-until");
+    if (!holdUntil) return;
+    const timestamp = new Date(holdUntil).getTime();
+    if (!Number.isFinite(timestamp)) return;
+    if (timestamp > now && timestamp < earliest) {
+      earliest = timestamp;
+    }
+  });
+  if (!Number.isFinite(earliest)) return;
+  const delay = Math.max(earliest - now + 50, 0);
+  holdRefreshTimer = window.setTimeout(() => {
+    void refreshFromServer();
+  }, delay);
+};
+
+const applyHoldFade = () => {
+  const now = Date.now();
+  document.querySelectorAll<HTMLElement>(".row.is-hold[data-hold-until]").forEach((row) => {
+    const holdUntil = row.getAttribute("data-hold-until");
+    if (!holdUntil) return;
+    const timestamp = new Date(holdUntil).getTime();
+    if (!Number.isFinite(timestamp)) return;
+    const remaining = Math.max(timestamp - now, 0);
+    if (remaining <= 0) {
+      row.classList.remove("is-hold");
+      row.style.removeProperty("--hold-ms");
+      return;
+    }
+    row.style.setProperty("--hold-ms", `${remaining}ms`);
+  });
 };
 
 const initEvents = () => {
@@ -546,21 +784,29 @@ const initEvents = () => {
 
 const init = () => {
   updateCountdowns();
+  updateRefreshCountdowns();
   highlightNew();
   updateRefreshLabel();
   updateNextRefreshLabel();
   setInterval(() => {
     updateCountdowns();
+    updateRefreshCountdowns();
     highlightNew();
     updateRefreshLabel();
     updateNextRefreshLabel();
-  }, 60000);
+  }, 15000);
   initMapToggles();
-  initHiddenToggle();
+  initViewToggles();
   initInterestActions();
   initEntryActions();
   initCarousel();
+  initRankActions();
+  initSwapActions();
   initEvents();
+  syncViewWithLocation(true);
+  window.addEventListener("popstate", () => syncViewWithLocation(true));
+  scheduleHoldRefresh();
+  applyHoldFade();
 };
 
 document.addEventListener("DOMContentLoaded", init);

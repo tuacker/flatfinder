@@ -143,6 +143,7 @@ const buildRecord = (
   hiddenAt: previous?.hiddenAt ?? null,
   detail: previous?.detail,
   assets: previous?.assets,
+  interest: previous?.interest,
 });
 
 export const scrapeWohnungen = async (state: FlatfinderState, rateLimiter: RateLimiter) => {

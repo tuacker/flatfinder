@@ -10,12 +10,23 @@ export type PlanungsprojektDetail = {
   imageUrls: string[];
 };
 
+export type InterestInfo = {
+  requestedAt?: string | null;
+  rank?: number | null;
+  holdUntil?: string | null;
+  watch?: {
+    nextCheckAt?: string | null;
+    lastCheckAt?: string | null;
+  };
+};
+
 export type PlanungsprojektRecord = Planungsprojekt & {
   firstSeenAt: string;
   lastSeenAt: string;
   seenAt?: string | null;
   hiddenAt?: string | null;
   detail?: PlanungsprojektDetail;
+  interest?: InterestInfo;
 };
 
 export type WohnungRecord = WohnungListItem & {
@@ -29,6 +40,7 @@ export type WohnungRecord = WohnungListItem & {
     thumbnail?: string | null;
     images?: string[];
   };
+  interest?: InterestInfo;
 };
 
 export type RateLimitState = {
@@ -36,11 +48,20 @@ export type RateLimitState = {
   count: number;
 };
 
+export type PendingSwap = {
+  id: string;
+  type: "wohnungen" | "planungsprojekte";
+  targetId: string;
+  dropId: string;
+  createdAt: string;
+};
+
 export type FlatfinderState = {
   updatedAt: string | null;
   planungsprojekte: PlanungsprojektRecord[];
   wohnungen: WohnungRecord[];
   rateLimit: RateLimitState;
+  pendingSwaps: PendingSwap[];
 };
 
 const currentMonth = () => new Date().toISOString().slice(0, 7);
@@ -53,6 +74,7 @@ const defaultState = (): FlatfinderState => ({
     month: currentMonth(),
     count: 0,
   },
+  pendingSwaps: [],
 });
 
 const normalizeState = (raw: FlatfinderState | null | undefined): FlatfinderState => {
@@ -65,6 +87,7 @@ const normalizeState = (raw: FlatfinderState | null | undefined): FlatfinderStat
       month: typeof raw.rateLimit?.month === "string" ? raw.rateLimit.month : currentMonth(),
       count: typeof raw.rateLimit?.count === "number" ? raw.rateLimit.count : 0,
     },
+    pendingSwaps: Array.isArray(raw.pendingSwaps) ? raw.pendingSwaps : [],
   };
 };
 

@@ -26,6 +26,7 @@ const buildRecord = async (
     seenAt: previous?.seenAt ?? (item.flags.angemeldet ? now : null),
     hiddenAt: previous?.hiddenAt ?? null,
     detail,
+    interest: previous?.interest,
   };
 };
 
