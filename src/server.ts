@@ -85,6 +85,7 @@ const main = async () => {
   const state = await loadState();
 
   const app = express();
+  app.use(express.json());
   app.use("/assets", express.static(path.resolve(assetsDir)));
   app.use(express.static(path.resolve("public")));
 
@@ -113,6 +114,50 @@ const main = async () => {
     clients.add(res);
     req.on("close", () => {
       clients.delete(res);
+    });
+  });
+
+  app.post("/api/items/:type/:id", async (req, res) => {
+    const { type, id } = req.params;
+    const action = (req.body as { action?: string } | undefined)?.action;
+
+    const collection =
+      type === "wohnungen"
+        ? state.wohnungen
+        : type === "planungsprojekte"
+          ? state.planungsprojekte
+          : null;
+
+    if (!collection) {
+      res.status(400).json({ error: "Unknown item type." });
+      return;
+    }
+
+    const item = collection.find((entry) => entry.id === id);
+    if (!item) {
+      res.status(404).json({ error: "Item not found." });
+      return;
+    }
+
+    const now = new Date().toISOString();
+
+    if (action === "toggleSeen") {
+      item.seenAt = item.seenAt ? null : now;
+    } else if (action === "toggleHidden") {
+      item.hiddenAt = item.hiddenAt ? null : now;
+    } else {
+      res.status(400).json({ error: "Unknown action." });
+      return;
+    }
+
+    state.updatedAt = now;
+    await saveState(state);
+    notifyClients();
+
+    res.json({
+      ok: true,
+      updatedAt: now,
+      item: { seenAt: item.seenAt ?? null, hiddenAt: item.hiddenAt ?? null },
     });
   });
 

@@ -139,6 +139,8 @@ const buildRecord = (
   source,
   firstSeenAt: previous?.firstSeenAt ?? now,
   lastSeenAt: now,
+  seenAt: previous?.seenAt ?? (item.flags.angemeldet ? now : null),
+  hiddenAt: previous?.hiddenAt ?? null,
   detail: previous?.detail,
   assets: previous?.assets,
 });

@@ -67,7 +67,10 @@ const renderPlanungsprojektRow = (item: FlatfinderState["planungsprojekte"][numb
          <img class="thumb" src="${safeAttribute(item.imageUrl)}" alt="" />
        </button>`
     : "";
-  const badges = renderBadges([item.flags.angemeldet ? "Angemeldet" : ""].filter(Boolean));
+  const isSigned = item.flags.angemeldet;
+  const isHidden = Boolean(item.hiddenAt);
+  const isSeen = Boolean(item.seenAt);
+  const badges = renderBadges([isSigned ? "Angemeldet" : ""].filter(Boolean));
   const lageplan = item.detail?.lageplanUrl
     ? `<a class="btn" href="${safeAttribute(item.detail.lageplanUrl)}" target="_blank">Lageplan</a>`
     : "";
@@ -75,8 +78,19 @@ const renderPlanungsprojektRow = (item: FlatfinderState["planungsprojekte"][numb
   const interestLabel = ` · <span class="count">${interestCount} Interessent*innen</span>`;
   const maxLabel = item.flags.maxlimit ? ' <span class="max">(max erreicht)</span>' : "";
   const title = `${safeValue(item.postalCode ?? "")}\u00a0, ${safeValue(item.address ?? "")}`;
+  const seenLabel = isSeen ? "Unseen" : "Seen";
+  const hiddenLabel = isHidden ? "Unhide" : "Hide";
+  const entryActions = item.id
+    ? `
+        <button class="btn btn-muted js-entry-action" data-action="toggleSeen" data-type="planungsprojekte" data-id="${safeAttribute(item.id)}">${seenLabel}</button>
+        <button class="btn btn-muted js-entry-action" data-action="toggleHidden" data-type="planungsprojekte" data-id="${safeAttribute(item.id)}">${hiddenLabel}</button>
+      `
+    : "";
+  const rowClasses = ["row"];
+  if (isSigned) rowClasses.push("is-signed");
+  if (isSeen) rowClasses.push("is-seen");
   return `
-    <div class="row" data-first-seen="${item.firstSeenAt}">
+    <div class="${rowClasses.join(" ")}" data-type="planungsprojekte" data-id="${safeAttribute(item.id ?? "")}" data-first-seen="${item.firstSeenAt}" data-seen-at="${safeAttribute(item.seenAt ?? "")}" data-hidden-at="${safeAttribute(item.hiddenAt ?? "")}">
       ${image}
       <div class="content">
         <div class="title">${title}${interestLabel}${maxLabel}</div>
@@ -88,7 +102,8 @@ const renderPlanungsprojektRow = (item: FlatfinderState["planungsprojekte"][numb
         ${badges}
         <div class="actions">
           ${lageplan}
-          ${item.url ? `<a class="btn btn-primary" href="${safeAttribute(item.url)}" target="_blank">Öffnen ↗</a>` : ""}
+          ${entryActions}
+          ${item.url ? `<a class="btn btn-primary" href="${safeAttribute(item.url)}" target="_blank">Open</a>` : ""}
         </div>
       </div>
     </div>
@@ -122,7 +137,18 @@ const renderWohnungRow = (item: WohnungRecord) => {
     : "";
 
   const timeLeft = formatTimeLeft(item.registrationEnd);
-  const badges = renderBadges([item.flags.angemeldet ? "Angemeldet" : ""].filter(Boolean));
+  const isSigned = item.flags.angemeldet;
+  const isHidden = Boolean(item.hiddenAt);
+  const isSeen = Boolean(item.seenAt);
+  const badges = renderBadges([isSigned ? "Angemeldet" : ""].filter(Boolean));
+  const seenLabel = isSeen ? "Unseen" : "Seen";
+  const hiddenLabel = isHidden ? "Unhide" : "Hide";
+  const entryActions = item.id
+    ? `
+        <button class="btn btn-muted js-entry-action" data-action="toggleSeen" data-type="wohnungen" data-id="${safeAttribute(item.id)}">${seenLabel}</button>
+        <button class="btn btn-muted js-entry-action" data-action="toggleHidden" data-type="wohnungen" data-id="${safeAttribute(item.id)}">${hiddenLabel}</button>
+      `
+    : "";
 
   const mapToggle = mapEmbed
     ? `<button class="btn js-toggle-map" data-target="${mapId}">Maps</button>`
@@ -134,8 +160,11 @@ const renderWohnungRow = (item: WohnungRecord) => {
        </div>`
     : "";
 
+  const rowClasses = ["row"];
+  if (isSigned) rowClasses.push("is-signed");
+  if (isSeen) rowClasses.push("is-seen");
   return `
-    <div class="row" data-first-seen="${item.firstSeenAt}">
+    <div class="${rowClasses.join(" ")}" data-type="wohnungen" data-id="${safeAttribute(item.id ?? "")}" data-first-seen="${item.firstSeenAt}" data-seen-at="${safeAttribute(item.seenAt ?? "")}" data-hidden-at="${safeAttribute(item.hiddenAt ?? "")}">
       ${thumb}
       <div class="content">
         <div class="title">${safeValue(item.postalCode ?? "")} ${safeValue(item.address ?? "")}</div>
@@ -149,11 +178,12 @@ const renderWohnungRow = (item: WohnungRecord) => {
         </div>
       </div>
       <div class="aside">
-        ${timeLeft ? `<div class="time" data-end="${item.registrationEnd}">Anmeldung noch ${timeLeft}</div>` : ""}
+        ${timeLeft ? `<div class="time" data-end="${item.registrationEnd}">${timeLeft}</div>` : ""}
         ${badges}
         <div class="actions">
           ${mapToggle}
-          ${item.url ? `<a class="btn btn-primary" href="${safeAttribute(item.url)}" target="_blank">Öffnen ↗</a>` : ""}
+          ${entryActions}
+          ${item.url ? `<a class="btn btn-primary" href="${safeAttribute(item.url)}" target="_blank">Open</a>` : ""}
         </div>
       </div>
     </div>
@@ -161,19 +191,54 @@ const renderWohnungRow = (item: WohnungRecord) => {
   `;
 };
 
-const renderSection = (title: string, items: string[]) => {
+const renderSection = (title: string, items: string[], listId: string) => {
   const content = items.length ? items.join("\n") : '<div class="empty">No results</div>';
   return `
     <div class="section">
       <h2>${escapeHtml(title)}</h2>
-      <div class="list">${content}</div>
+      <div class="list" id="${listId}">${content}</div>
     </div>
   `;
 };
 
+const renderHiddenSection = (items: string[], count: number) => {
+  const content = items.length ? items.join("\n") : '<div class="empty">No hidden entries</div>';
+  return `
+    <div id="hidden-section" class="section is-hidden">
+      <h2>Hidden (<span id="hidden-count">${count}</span>)</h2>
+      <div class="list" id="hidden-list">${content}</div>
+    </div>
+  `;
+};
+
+const sortSeenLast = <T extends { seenAt?: string | null }>(items: T[]) => {
+  const unseen = items.filter((item) => !item.seenAt);
+  const seen = items.filter((item) => item.seenAt);
+  return [...unseen, ...seen];
+};
+
 export const renderPage = (state: FlatfinderState, options: RenderOptions) => {
-  const wohnungen = state.wohnungen.map(renderWohnungRow);
-  const planungsprojekte = state.planungsprojekte.map(renderPlanungsprojektRow);
+  const visibleWohnungen = state.wohnungen.filter((item) => !item.hiddenAt);
+  const visiblePlanungsprojekte = state.planungsprojekte.filter((item) => !item.hiddenAt);
+  const hiddenWohnungen = state.wohnungen.filter((item) => item.hiddenAt);
+  const hiddenPlanungsprojekte = state.planungsprojekte.filter((item) => item.hiddenAt);
+
+  const wohnungen = sortSeenLast(visibleWohnungen).map(renderWohnungRow);
+  const planungsprojekte = sortSeenLast(visiblePlanungsprojekte).map(renderPlanungsprojektRow);
+
+  const hiddenItems = [
+    ...hiddenWohnungen.map((item) => ({
+      hiddenAt: item.hiddenAt ?? "",
+      html: renderWohnungRow(item),
+    })),
+    ...hiddenPlanungsprojekte.map((item) => ({
+      hiddenAt: item.hiddenAt ?? "",
+      html: renderPlanungsprojektRow(item),
+    })),
+  ].sort((a, b) => b.hiddenAt.localeCompare(a.hiddenAt));
+
+  const hiddenRows = hiddenItems.map((item) => item.html);
+
   const updatedAt = state.updatedAt ?? "";
 
   return `
@@ -188,14 +253,21 @@ export const renderPage = (state: FlatfinderState, options: RenderOptions) => {
       </head>
       <body data-updated-at="${updatedAt}" data-next-refresh="${options.nextRefreshAt}">
         <div class="header">
-          <h1>Flatfinder</h1>
-          <div class="status-line">
-            Last refresh: <span id="last-refresh" title="${updatedAt || "-"}"></span>, next refresh: <span id="next-refresh"></span>, rate ${state.rateLimit.count}/${rateLimitMonthly}
+          <div class="header-row">
+            <h1>Flatfinder</h1>
+            <div class="status-line">
+              Last refresh: <span id="last-refresh" title="${updatedAt || "-"}"></span>, next refresh: <span id="next-refresh"></span>, rate ${state.rateLimit.count}/${rateLimitMonthly}
+            </div>
+          </div>
+          <div class="header-divider"></div>
+          <div class="status-actions">
+            <button class="btn btn-muted js-toggle-hidden" data-target="hidden-section">Hidden</button>
           </div>
         </div>
 
-        ${renderSection(`Wohnungen (${wohnungen.length})`, wohnungen)}
-        ${renderSection(`Planungsprojekte (${planungsprojekte.length})`, planungsprojekte)}
+        ${renderHiddenSection(hiddenRows, hiddenItems.length)}
+        ${renderSection(`Wohnungen (${wohnungen.length})`, wohnungen, "wohnungen-list")}
+        ${renderSection(`Planungsprojekte (${planungsprojekte.length})`, planungsprojekte, "planungsprojekte-list")}
 
         <div id="carousel" class="carousel hidden">
           <button class="close" aria-label="Close">×</button>

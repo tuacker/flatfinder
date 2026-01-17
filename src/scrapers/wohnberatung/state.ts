@@ -13,6 +13,8 @@ export type PlanungsprojektDetail = {
 export type PlanungsprojektRecord = Planungsprojekt & {
   firstSeenAt: string;
   lastSeenAt: string;
+  seenAt?: string | null;
+  hiddenAt?: string | null;
   detail?: PlanungsprojektDetail;
 };
 
@@ -20,6 +22,8 @@ export type WohnungRecord = WohnungListItem & {
   source: "gefoerdert" | "gemeinde";
   firstSeenAt: string;
   lastSeenAt: string;
+  seenAt?: string | null;
+  hiddenAt?: string | null;
   detail?: WohnungDetail;
   assets?: {
     thumbnail?: string | null;

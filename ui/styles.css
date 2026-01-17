@@ -10,15 +10,26 @@ h1 {
 }
 .header {
   display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.header-row {
+  display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 16px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid #e2e8f0;
+}
+.header-divider {
+  height: 1px;
+  background: #e2e8f0;
 }
 .status-line {
   color: #475569;
   font-size: 13px;
+}
+.status-actions {
+  display: flex;
+  gap: 8px;
 }
 .section {
   margin-top: 32px;
@@ -96,6 +107,13 @@ h1 {
   border: 1px solid #bfdbfe;
   background: #eff6ff;
 }
+.row.is-signed {
+  border: 1px solid #86efac;
+  background: #ecfdf5;
+}
+.row.is-seen {
+  opacity: 0.8;
+}
 .status {
   color: #dc2626;
   font-size: 14px;
@@ -152,6 +170,11 @@ h1 {
   color: #fff;
   border-color: #2563eb;
 }
+.btn-muted {
+  border-color: #e2e8f0;
+  color: #475569;
+  background: #f8fafc;
+}
 .map-container {
   margin: 8px 0 16px 136px;
   display: flex;
@@ -167,6 +190,9 @@ h1 {
   border-radius: 10px;
 }
 .map-container.is-hidden {
+  display: none;
+}
+.is-hidden {
   display: none;
 }
 .empty {

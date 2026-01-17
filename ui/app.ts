@@ -14,7 +14,7 @@ const updateCountdowns = () => {
     const end = node.getAttribute("data-end");
     const formatted = formatTimeLeft(end);
     if (formatted) {
-      node.textContent = "Anmeldung noch " + formatted;
+      node.textContent = formatted;
     }
   });
 };
@@ -23,6 +23,16 @@ const highlightNew = () => {
   const now = Date.now();
   const windowMs = 24 * 60 * 60 * 1000;
   document.querySelectorAll<HTMLElement>(".row[data-first-seen]").forEach((row) => {
+    if (row.classList.contains("is-signed")) {
+      row.classList.remove("is-new");
+      return;
+    }
+    const seenAt = row.getAttribute("data-seen-at");
+    const hiddenAt = row.getAttribute("data-hidden-at");
+    if (seenAt || hiddenAt) {
+      row.classList.remove("is-new");
+      return;
+    }
     const firstSeen = row.getAttribute("data-first-seen");
     if (!firstSeen) return;
     const diff = now - new Date(firstSeen).getTime();
@@ -72,6 +82,146 @@ const initMapToggles = () => {
       const container = document.getElementById(target);
       if (!container) return;
       container.classList.toggle("is-hidden");
+    });
+  });
+};
+
+const initHiddenToggle = () => {
+  const button = document.querySelector<HTMLButtonElement>(".js-toggle-hidden");
+  if (!button) return;
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    const target = button.getAttribute("data-target");
+    if (!target) return;
+    const container = document.getElementById(target);
+    if (!container) return;
+    container.classList.toggle("is-hidden");
+  });
+};
+
+let suppressReloadUntil = 0;
+
+const getRowList = (type: string) => {
+  if (type === "wohnungen") return document.getElementById("wohnungen-list");
+  if (type === "planungsprojekte") return document.getElementById("planungsprojekte-list");
+  return null;
+};
+
+const getMapSection = (row: HTMLElement) => {
+  const mapToggle = row.querySelector<HTMLButtonElement>(".js-toggle-map");
+  const mapId = mapToggle?.getAttribute("data-target");
+  return mapId ? document.getElementById(mapId) : null;
+};
+
+const moveRowWithMap = (row: HTMLElement, list: HTMLElement, before: Element | null) => {
+  const mapSection = getMapSection(row);
+  if (before) {
+    list.insertBefore(row, before);
+    if (mapSection) list.insertBefore(mapSection, before);
+  } else {
+    list.appendChild(row);
+    if (mapSection) list.appendChild(mapSection);
+  }
+};
+
+const insertHiddenRow = (row: HTMLElement, hiddenList: HTMLElement) => {
+  const hiddenAt = row.getAttribute("data-hidden-at") ?? "";
+  const rows = Array.from(hiddenList.querySelectorAll<HTMLElement>(":scope > .row"));
+  const insertBefore =
+    rows.find((entry) => (entry.getAttribute("data-hidden-at") ?? "") < hiddenAt) ?? null;
+  moveRowWithMap(row, hiddenList, insertBefore);
+};
+
+const placeSeenOrder = (row: HTMLElement, list: HTMLElement) => {
+  const isSeen = row.classList.contains("is-seen");
+  const rows = Array.from(list.querySelectorAll<HTMLElement>(":scope > .row")).filter(
+    (entry) => entry !== row,
+  );
+  if (isSeen) {
+    moveRowWithMap(row, list, null);
+    return;
+  }
+  const firstSeen = rows.find((entry) => entry.classList.contains("is-seen")) ?? null;
+  moveRowWithMap(row, list, firstSeen);
+};
+
+const updateHiddenCount = () => {
+  const count = document.querySelectorAll("#hidden-list > .row").length;
+  const label = document.getElementById("hidden-count");
+  if (label) label.textContent = String(count);
+};
+
+const initEntryActions = () => {
+  document.querySelectorAll<HTMLButtonElement>(".js-entry-action").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.preventDefault();
+      const action = button.getAttribute("data-action");
+      const type = button.getAttribute("data-type");
+      const id = button.getAttribute("data-id");
+      if (!action || !type || !id) return;
+
+      const row = button.closest<HTMLElement>(".row");
+      if (!row) return;
+
+      suppressReloadUntil = Date.now() + 4000;
+
+      button.disabled = true;
+      try {
+        const response = await fetch(
+          `/api/items/${encodeURIComponent(type)}/${encodeURIComponent(id)}`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ action }),
+          },
+        );
+        if (!response.ok) return;
+
+        const payload = (await response.json()) as {
+          ok: boolean;
+          updatedAt?: string;
+          item?: { seenAt?: string | null; hiddenAt?: string | null };
+        };
+
+        if (!payload.ok) return;
+
+        if (payload.updatedAt) {
+          document.body.setAttribute("data-updated-at", payload.updatedAt);
+          updateRefreshLabel();
+        }
+
+        const seenAt = payload.item?.seenAt ?? null;
+        const hiddenAt = payload.item?.hiddenAt ?? null;
+
+        row.setAttribute("data-seen-at", seenAt ?? "");
+        row.setAttribute("data-hidden-at", hiddenAt ?? "");
+        row.classList.toggle("is-seen", Boolean(seenAt));
+
+        row
+          .querySelectorAll<HTMLButtonElement>(".js-entry-action[data-action='toggleSeen']")
+          .forEach((btn) => {
+            btn.textContent = seenAt ? "Unseen" : "Seen";
+          });
+        row
+          .querySelectorAll<HTMLButtonElement>(".js-entry-action[data-action='toggleHidden']")
+          .forEach((btn) => {
+            btn.textContent = hiddenAt ? "Unhide" : "Hide";
+          });
+
+        const hiddenList = document.getElementById("hidden-list");
+        const targetList = getRowList(type);
+
+        if (hiddenAt && hiddenList) {
+          insertHiddenRow(row, hiddenList);
+        } else if (!hiddenAt && targetList) {
+          placeSeenOrder(row, targetList);
+        }
+
+        updateHiddenCount();
+        highlightNew();
+      } finally {
+        button.disabled = false;
+      }
     });
   });
 };
@@ -168,6 +318,10 @@ const initEvents = () => {
       return;
     }
     if (updatedAt && updatedAt !== current) {
+      if (Date.now() < suppressReloadUntil) {
+        suppressReloadUntil = 0;
+        return;
+      }
       location.reload();
     }
   };
@@ -189,6 +343,8 @@ const init = () => {
     updateNextRefreshLabel();
   }, 60000);
   initMapToggles();
+  initHiddenToggle();
+  initEntryActions();
   initCarousel();
   initEvents();
 };

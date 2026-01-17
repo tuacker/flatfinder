@@ -23,6 +23,8 @@ const buildRecord = async (
     ...item,
     firstSeenAt: previous?.firstSeenAt ?? now,
     lastSeenAt: now,
+    seenAt: previous?.seenAt ?? (item.flags.angemeldet ? now : null),
+    hiddenAt: previous?.hiddenAt ?? null,
     detail,
   };
 };
