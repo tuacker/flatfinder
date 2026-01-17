@@ -73,9 +73,15 @@ const updateNextRefreshLabel = () => {
   label.textContent = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
 };
 
+const bindOnce = (element: HTMLElement, key: string, handler: (event: Event) => void) => {
+  if (element.dataset[key] === "true") return;
+  element.dataset[key] = "true";
+  element.addEventListener("click", handler);
+};
+
 const initMapToggles = () => {
   document.querySelectorAll<HTMLButtonElement>(".js-toggle-map").forEach((button) => {
-    button.addEventListener("click", (event) => {
+    bindOnce(button, "boundMap", (event) => {
       event.preventDefault();
       const target = button.getAttribute("data-target");
       if (!target) return;
@@ -89,7 +95,7 @@ const initMapToggles = () => {
 const initHiddenToggle = () => {
   const button = document.querySelector<HTMLButtonElement>(".js-toggle-hidden");
   if (!button) return;
-  button.addEventListener("click", (event) => {
+  bindOnce(button, "boundHidden", (event) => {
     event.preventDefault();
     const target = button.getAttribute("data-target");
     if (!target) return;
@@ -151,9 +157,133 @@ const updateHiddenCount = () => {
   if (label) label.textContent = String(count);
 };
 
+const updateInterestButton = (button: HTMLButtonElement, signed: boolean) => {
+  button.setAttribute("data-action", signed ? "remove" : "add");
+  button.textContent = signed ? "Remove" : "Signup";
+  button.classList.toggle("btn-success", !signed);
+  button.classList.toggle("btn-danger", signed);
+};
+
+const sendInterestRequest = async (options: {
+  button: HTMLButtonElement;
+  action: string;
+  type: string;
+  id: string;
+}) => {
+  const { button, action, type, id } = options;
+  button.disabled = true;
+  try {
+    const response = await fetch(
+      `/api/interest/${encodeURIComponent(type)}/${encodeURIComponent(id)}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action, confirm: action === "remove" }),
+      },
+    );
+    if (!response.ok) {
+      console.warn("Interest request failed.", await response.text());
+      return { ok: false, signed: null };
+    }
+    const payload = (await response.json()) as { ok: boolean; signed?: boolean };
+    if (!payload.ok) {
+      console.warn("Interest request failed.");
+      return { ok: false, signed: null };
+    }
+    return { ok: true, signed: typeof payload.signed === "boolean" ? payload.signed : null };
+  } catch (error) {
+    console.warn("Interest request failed.", error);
+    return { ok: false, signed: null };
+  } finally {
+    button.disabled = false;
+  }
+};
+
+const initInterestActions = () => {
+  document.querySelectorAll<HTMLButtonElement>(".js-interest-action").forEach((button) => {
+    bindOnce(button, "boundInterest", async (event) => {
+      event.preventDefault();
+      const action = button.getAttribute("data-action");
+      const type = button.getAttribute("data-type");
+      const id = button.getAttribute("data-id");
+      if (!action || !type || !id) return;
+
+      const container = button.closest<HTMLElement>(".row-header-interest") ?? button.parentElement;
+      if (!container) return;
+
+      if (action === "remove") {
+        if (container.querySelector(".js-interest-confirm")) return;
+        const originalHtml = container.innerHTML;
+        const originalWidth = Math.max(0, Math.round(button.getBoundingClientRect().width));
+
+        const confirmButton = document.createElement("button");
+        confirmButton.type = "button";
+        confirmButton.className = "btn btn-danger js-interest-confirm";
+        confirmButton.textContent = "Confirm remove";
+
+        const cancelButton = document.createElement("button");
+        cancelButton.type = "button";
+        cancelButton.className = "btn btn-muted js-interest-cancel";
+        cancelButton.textContent = "Cancel";
+        if (originalWidth > 0) {
+          cancelButton.style.width = `${originalWidth}px`;
+        }
+
+        const confirmWrap = document.createElement("div");
+        confirmWrap.className = "interest-confirm";
+        confirmWrap.append(confirmButton, cancelButton);
+        container.replaceChildren(confirmWrap);
+
+        requestAnimationFrame(() => {
+          confirmWrap.classList.add("is-visible");
+        });
+
+        cancelButton.addEventListener("click", (cancelEvent) => {
+          cancelEvent.preventDefault();
+          container.innerHTML = originalHtml;
+          initInterestActions();
+        });
+
+        confirmButton.addEventListener("click", async (confirmEvent) => {
+          confirmEvent.preventDefault();
+          confirmButton.disabled = true;
+          cancelButton.disabled = true;
+          const result = await sendInterestRequest({ button: confirmButton, action, type, id });
+          if (result.ok && result.signed !== null) {
+            container.innerHTML = originalHtml;
+            initInterestActions();
+            const restored = container.querySelector<HTMLButtonElement>(".js-interest-action");
+            if (restored) {
+              updateInterestButton(restored, result.signed);
+              const row = restored.closest<HTMLElement>(".row");
+              row?.classList.toggle("is-signed", result.signed);
+              highlightNew();
+            }
+            await refreshFromServer();
+            return;
+          }
+          container.innerHTML = originalHtml;
+          initInterestActions();
+        });
+
+        return;
+      }
+
+      const result = await sendInterestRequest({ button, action, type, id });
+      if (result.ok && result.signed !== null) {
+        const row = button.closest<HTMLElement>(".row");
+        row?.classList.toggle("is-signed", result.signed);
+        updateInterestButton(button, result.signed);
+        highlightNew();
+      }
+      await refreshFromServer();
+    });
+  });
+};
+
 const initEntryActions = () => {
   document.querySelectorAll<HTMLButtonElement>(".js-entry-action").forEach((button) => {
-    button.addEventListener("click", async (event) => {
+    bindOnce(button, "boundEntry", async (event) => {
       event.preventDefault();
       const action = button.getAttribute("data-action");
       const type = button.getAttribute("data-type");
@@ -226,36 +356,47 @@ const initEntryActions = () => {
   });
 };
 
-const initCarousel = () => {
-  const carousel = document.getElementById("carousel");
-  const carouselImage = document.getElementById("carousel-image") as HTMLImageElement | null;
-  const carouselLink = document.getElementById("carousel-link") as HTMLAnchorElement | null;
-  let carouselImages: string[] = [];
-  let carouselIndex = 0;
+let carouselInitialized = false;
+let carouselImages: string[] = [];
+let carouselIndex = 0;
+let carousel: HTMLElement | null = null;
+let carouselImage: HTMLImageElement | null = null;
+let carouselLink: HTMLAnchorElement | null = null;
 
-  const showCarouselImage = () => {
-    if (!carouselImage || carouselImages.length === 0) return;
-    const src = carouselImages[carouselIndex];
-    carouselImage.src = src;
-    if (carouselLink) carouselLink.href = src;
-  };
+const ensureCarouselElements = () => {
+  if (carousel) return;
+  carousel = document.getElementById("carousel");
+  carouselImage = document.getElementById("carousel-image") as HTMLImageElement | null;
+  carouselLink = document.getElementById("carousel-link") as HTMLAnchorElement | null;
+};
 
-  const openCarousel = (images: string[]) => {
-    if (!carousel || !carouselImage || images.length === 0) return;
-    carouselImages = images;
-    carouselIndex = 0;
-    showCarouselImage();
-    carousel.classList.remove("hidden");
-  };
+const showCarouselImage = () => {
+  ensureCarouselElements();
+  if (!carouselImage || carouselImages.length === 0) return;
+  const src = carouselImages[carouselIndex];
+  carouselImage.src = src;
+  if (carouselLink) carouselLink.href = src;
+};
 
-  const closeCarousel = () => {
-    if (!carousel) return;
-    carousel.classList.add("hidden");
-    carouselImages = [];
-  };
+const openCarousel = (images: string[]) => {
+  ensureCarouselElements();
+  if (!carousel || !carouselImage || images.length === 0) return;
+  carouselImages = images;
+  carouselIndex = 0;
+  showCarouselImage();
+  carousel.classList.remove("hidden");
+};
 
+const closeCarousel = () => {
+  ensureCarouselElements();
+  if (!carousel) return;
+  carousel.classList.add("hidden");
+  carouselImages = [];
+};
+
+const bindCarouselButtons = () => {
   document.querySelectorAll<HTMLButtonElement>(".js-carousel").forEach((button) => {
-    button.addEventListener("click", () => {
+    bindOnce(button, "boundCarousel", () => {
       const raw = button.getAttribute("data-images");
       if (!raw) return;
       try {
@@ -266,6 +407,13 @@ const initCarousel = () => {
       }
     });
   });
+};
+
+const initCarousel = () => {
+  ensureCarouselElements();
+  bindCarouselButtons();
+  if (carouselInitialized) return;
+  carouselInitialized = true;
 
   const showPrev = () => {
     if (carouselImages.length === 0) return;
@@ -298,6 +446,71 @@ const initCarousel = () => {
   });
 };
 
+type FragmentPayload = {
+  updatedAt: string | null;
+  nextRefreshAt: number;
+  rateLimitCount: number;
+  rateLimitMonthly: number;
+  sections: {
+    hidden: string;
+    wohnungen: string;
+    planungsprojekte: string;
+  };
+};
+
+let refreshPromise: Promise<void> | null = null;
+
+const replaceSection = (id: string, html: string) => {
+  const current = document.getElementById(id);
+  if (!current) return;
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = html.trim();
+  const next = wrapper.firstElementChild;
+  if (!next) return;
+  current.replaceWith(next);
+};
+
+const applyFragments = (payload: FragmentPayload) => {
+  document.body.setAttribute("data-updated-at", payload.updatedAt ?? "");
+  document.body.setAttribute("data-next-refresh", String(payload.nextRefreshAt));
+
+  const rateCount = document.getElementById("rate-count");
+  if (rateCount) rateCount.textContent = String(payload.rateLimitCount);
+  const rateLimit = document.getElementById("rate-limit");
+  if (rateLimit) rateLimit.textContent = String(payload.rateLimitMonthly);
+
+  replaceSection("hidden-section", payload.sections.hidden);
+  replaceSection("wohnungen-section", payload.sections.wohnungen);
+  replaceSection("planungsprojekte-section", payload.sections.planungsprojekte);
+
+  initMapToggles();
+  initHiddenToggle();
+  initInterestActions();
+  initEntryActions();
+  initCarousel();
+  updateCountdowns();
+  highlightNew();
+  updateRefreshLabel();
+  updateNextRefreshLabel();
+};
+
+const refreshFromServer = async () => {
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = (async () => {
+    try {
+      const response = await fetch("/api/fragment");
+      if (!response.ok) return;
+      const payload = (await response.json()) as FragmentPayload;
+      applyFragments(payload);
+    } catch {
+      return;
+    } finally {
+      refreshPromise = null;
+    }
+  })();
+  return refreshPromise;
+};
+
 const initEvents = () => {
   const events = new EventSource("/events");
   events.onmessage = (event) => {
@@ -309,7 +522,7 @@ const initEvents = () => {
       if (updatedAt) {
         document.body.setAttribute("data-updated-at", updatedAt);
       }
-      if (payload.nextRefresh) {
+      if (typeof payload.nextRefresh === "number") {
         document.body.setAttribute("data-next-refresh", String(payload.nextRefresh));
       }
       updateRefreshLabel();
@@ -322,7 +535,7 @@ const initEvents = () => {
         suppressReloadUntil = 0;
         return;
       }
-      location.reload();
+      void refreshFromServer();
     }
   };
 
@@ -344,6 +557,7 @@ const init = () => {
   }, 60000);
   initMapToggles();
   initHiddenToggle();
+  initInterestActions();
   initEntryActions();
   initCarousel();
   initEvents();

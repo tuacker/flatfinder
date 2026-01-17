@@ -9,6 +9,18 @@ export type RenderOptions = {
   nextRefreshAt: number;
 };
 
+export type RenderFragments = {
+  updatedAt: string | null;
+  nextRefreshAt: number;
+  rateLimitCount: number;
+  rateLimitMonthly: number;
+  sections: {
+    hidden: string;
+    wohnungen: string;
+    planungsprojekte: string;
+  };
+};
+
 const escapeHtml = (value: string) =>
   value
     .replace(/&/g, "&amp;")
@@ -71,13 +83,27 @@ const renderPlanungsprojektRow = (item: FlatfinderState["planungsprojekte"][numb
   const isHidden = Boolean(item.hiddenAt);
   const isSeen = Boolean(item.seenAt);
   const badges = renderBadges([isSigned ? "Angemeldet" : ""].filter(Boolean));
+  const interestButtonLabel = isSigned ? "Remove" : "Signup";
+  const interestAction = isSigned ? "remove" : "add";
+  const interestButtonClass = isSigned ? "btn-danger" : "btn-success";
+  const interestButton = item.id
+    ? `<button class="btn ${interestButtonClass} js-interest-action" data-action="${interestAction}" data-type="planungsprojekte" data-id="${safeAttribute(item.id)}">${interestButtonLabel}</button>`
+    : "";
   const lageplan = item.detail?.lageplanUrl
     ? `<a class="btn" href="${safeAttribute(item.detail.lageplanUrl)}" target="_blank">Lageplan</a>`
     : "";
   const interestCount = safeValue(String(item.interessenten ?? "-"));
-  const interestLabel = ` · <span class="count">${interestCount} Interessent*innen</span>`;
   const maxLabel = item.flags.maxlimit ? ' <span class="max">(max erreicht)</span>' : "";
   const title = `${safeValue(item.postalCode ?? "")}\u00a0, ${safeValue(item.address ?? "")}`;
+  const titleMetaParts = [`<span class="title-meta">${interestCount} signups${maxLabel}</span>`];
+  const titleMeta =
+    titleMetaParts.length > 0
+      ? `<span class="title-meta-group">· ${titleMetaParts.join(" · ")}</span>`
+      : "";
+  const badgesBlock = badges ? `<span class="title-badges">${badges}</span>` : "";
+  const interestActionBlock = interestButton
+    ? `<div class="row-header-interest">${interestButton}</div>`
+    : "";
   const seenLabel = isSeen ? "Unseen" : "Seen";
   const hiddenLabel = isHidden ? "Unhide" : "Hide";
   const entryActions = item.id
@@ -93,17 +119,23 @@ const renderPlanungsprojektRow = (item: FlatfinderState["planungsprojekte"][numb
     <div class="${rowClasses.join(" ")}" data-type="planungsprojekte" data-id="${safeAttribute(item.id ?? "")}" data-first-seen="${item.firstSeenAt}" data-seen-at="${safeAttribute(item.seenAt ?? "")}" data-hidden-at="${safeAttribute(item.hiddenAt ?? "")}">
       ${image}
       <div class="content">
-        <div class="title">${title}${interestLabel}${maxLabel}</div>
+        <div class="row-header">
+          <div class="title-line">
+            <div class="title">${title}</div>
+            ${titleMeta}
+            ${badgesBlock}
+          </div>
+          <div class="row-header-actions">
+            ${interestActionBlock}
+            <div class="actions">
+              ${lageplan}
+              ${entryActions}
+              ${item.url ? `<a class="btn btn-primary" href="${safeAttribute(item.url)}" target="_blank">Open</a>` : ""}
+            </div>
+          </div>
+        </div>
         <div class="meta">
           Bezugsfertig ${safeValue(item.bezugsfertig)} · ${safeValue(item.foerderungstyp)}
-        </div>
-      </div>
-      <div class="aside">
-        ${badges}
-        <div class="actions">
-          ${lageplan}
-          ${entryActions}
-          ${item.url ? `<a class="btn btn-primary" href="${safeAttribute(item.url)}" target="_blank">Open</a>` : ""}
         </div>
       </div>
     </div>
@@ -137,12 +169,19 @@ const renderWohnungRow = (item: WohnungRecord) => {
     : "";
 
   const timeLeft = formatTimeLeft(item.registrationEnd);
+  const timeLabel = timeLeft ? `<span class="title-meta time">${timeLeft}</span>` : "";
   const isSigned = item.flags.angemeldet;
   const isHidden = Boolean(item.hiddenAt);
   const isSeen = Boolean(item.seenAt);
   const badges = renderBadges([isSigned ? "Angemeldet" : ""].filter(Boolean));
   const seenLabel = isSeen ? "Unseen" : "Seen";
   const hiddenLabel = isHidden ? "Unhide" : "Hide";
+  const interestButtonLabel = isSigned ? "Remove" : "Signup";
+  const interestAction = isSigned ? "remove" : "add";
+  const interestButtonClass = isSigned ? "btn-danger" : "btn-success";
+  const interestButton = item.id
+    ? `<button class="btn ${interestButtonClass} js-interest-action" data-action="${interestAction}" data-type="wohnungen" data-id="${safeAttribute(item.id)}">${interestButtonLabel}</button>`
+    : "";
   const entryActions = item.id
     ? `
         <button class="btn btn-muted js-entry-action" data-action="toggleSeen" data-type="wohnungen" data-id="${safeAttribute(item.id)}">${seenLabel}</button>
@@ -160,6 +199,20 @@ const renderWohnungRow = (item: WohnungRecord) => {
        </div>`
     : "";
 
+  const interestCount = safeValue(String(item.interessenten ?? "-"));
+  const titleMetaParts = [
+    ...(timeLabel ? [timeLabel] : []),
+    `<span class="title-meta">${interestCount} signups</span>`,
+  ];
+  const titleMeta =
+    titleMetaParts.length > 0
+      ? `<span class="title-meta-group">· ${titleMetaParts.join(" · ")}</span>`
+      : "";
+  const badgesBlock = badges ? `<span class="title-badges">${badges}</span>` : "";
+  const interestActionBlock = interestButton
+    ? `<div class="row-header-interest">${interestButton}</div>`
+    : "";
+
   const rowClasses = ["row"];
   if (isSigned) rowClasses.push("is-signed");
   if (isSeen) rowClasses.push("is-seen");
@@ -167,23 +220,27 @@ const renderWohnungRow = (item: WohnungRecord) => {
     <div class="${rowClasses.join(" ")}" data-type="wohnungen" data-id="${safeAttribute(item.id ?? "")}" data-first-seen="${item.firstSeenAt}" data-seen-at="${safeAttribute(item.seenAt ?? "")}" data-hidden-at="${safeAttribute(item.hiddenAt ?? "")}">
       ${thumb}
       <div class="content">
-        <div class="title">${safeValue(item.postalCode ?? "")} ${safeValue(item.address ?? "")}</div>
+        <div class="row-header">
+          <div class="title-line">
+            <div class="title">${safeValue(item.postalCode ?? "")} ${safeValue(item.address ?? "")}</div>
+            ${titleMeta}
+            ${badgesBlock}
+          </div>
+          <div class="row-header-actions">
+            ${interestActionBlock}
+            <div class="actions">
+              ${mapToggle}
+              ${entryActions}
+              ${item.url ? `<a class="btn btn-primary" href="${safeAttribute(item.url)}" target="_blank">Open</a>` : ""}
+            </div>
+          </div>
+        </div>
         <div class="facts">
           <div class="fact"><span class="label">Fläche:</span><span class="value">${safeValue(item.size)}</span></div>
           <div class="fact"><span class="label">Zimmer:</span><span class="value">${safeValue(cleanValue(item.rooms))}</span></div>
           <div class="fact"><span class="label">Kosten:</span><span class="value">${safeValue(cleanValue(item.monthlyCost))}</span></div>
           <div class="fact"><span class="label">Eigenmittel:</span><span class="value">${safeValue(cleanValue(item.equity))}</span></div>
           <div class="fact"><span class="label">Typ:</span><span class="value">${safeValue(item.foerderungstyp)}</span></div>
-          <div class="fact"><span class="label">Anmeldungen:</span><span class="value">${safeValue(String(item.interessenten ?? "-"))}</span></div>
-        </div>
-      </div>
-      <div class="aside">
-        ${timeLeft ? `<div class="time" data-end="${item.registrationEnd}">${timeLeft}</div>` : ""}
-        ${badges}
-        <div class="actions">
-          ${mapToggle}
-          ${entryActions}
-          ${item.url ? `<a class="btn btn-primary" href="${safeAttribute(item.url)}" target="_blank">Open</a>` : ""}
         </div>
       </div>
     </div>
@@ -191,10 +248,10 @@ const renderWohnungRow = (item: WohnungRecord) => {
   `;
 };
 
-const renderSection = (title: string, items: string[], listId: string) => {
+const renderSection = (title: string, items: string[], listId: string, sectionId: string) => {
   const content = items.length ? items.join("\n") : '<div class="empty">No results</div>';
   return `
-    <div class="section">
+    <div class="section" id="${sectionId}">
       <h2>${escapeHtml(title)}</h2>
       <div class="list" id="${listId}">${content}</div>
     </div>
@@ -217,7 +274,7 @@ const sortSeenLast = <T extends { seenAt?: string | null }>(items: T[]) => {
   return [...unseen, ...seen];
 };
 
-export const renderPage = (state: FlatfinderState, options: RenderOptions) => {
+const buildSections = (state: FlatfinderState) => {
   const visibleWohnungen = state.wohnungen.filter((item) => !item.hiddenAt);
   const visiblePlanungsprojekte = state.planungsprojekte.filter((item) => !item.hiddenAt);
   const hiddenWohnungen = state.wohnungen.filter((item) => item.hiddenAt);
@@ -238,6 +295,50 @@ export const renderPage = (state: FlatfinderState, options: RenderOptions) => {
   ].sort((a, b) => b.hiddenAt.localeCompare(a.hiddenAt));
 
   const hiddenRows = hiddenItems.map((item) => item.html);
+  const hiddenCount = hiddenItems.length;
+  const wohnungenCount = wohnungen.length;
+  const planungsprojekteCount = planungsprojekte.length;
+
+  return {
+    hiddenSection: renderHiddenSection(hiddenRows, hiddenCount),
+    wohnungenSection: renderSection(
+      `Wohnungen (${wohnungenCount})`,
+      wohnungen,
+      "wohnungen-list",
+      "wohnungen-section",
+    ),
+    planungsprojekteSection: renderSection(
+      `Planungsprojekte (${planungsprojekteCount})`,
+      planungsprojekte,
+      "planungsprojekte-list",
+      "planungsprojekte-section",
+    ),
+    hiddenCount,
+    wohnungenCount,
+    planungsprojekteCount,
+  };
+};
+
+export const renderFragments = (
+  state: FlatfinderState,
+  options: RenderOptions,
+): RenderFragments => {
+  const sections = buildSections(state);
+  return {
+    updatedAt: state.updatedAt ?? null,
+    nextRefreshAt: options.nextRefreshAt,
+    rateLimitCount: state.rateLimit.count,
+    rateLimitMonthly,
+    sections: {
+      hidden: sections.hiddenSection,
+      wohnungen: sections.wohnungenSection,
+      planungsprojekte: sections.planungsprojekteSection,
+    },
+  };
+};
+
+export const renderPage = (state: FlatfinderState, options: RenderOptions) => {
+  const sections = buildSections(state);
 
   const updatedAt = state.updatedAt ?? "";
 
@@ -256,7 +357,7 @@ export const renderPage = (state: FlatfinderState, options: RenderOptions) => {
           <div class="header-row">
             <h1>Flatfinder</h1>
             <div class="status-line">
-              Last refresh: <span id="last-refresh" title="${updatedAt || "-"}"></span>, next refresh: <span id="next-refresh"></span>, rate ${state.rateLimit.count}/${rateLimitMonthly}
+              Last refresh: <span id="last-refresh" title="${updatedAt || "-"}"></span>, next refresh: <span id="next-refresh"></span>, rate <span id="rate-count">${state.rateLimit.count}</span>/<span id="rate-limit">${rateLimitMonthly}</span>
             </div>
           </div>
           <div class="header-divider"></div>
@@ -265,9 +366,9 @@ export const renderPage = (state: FlatfinderState, options: RenderOptions) => {
           </div>
         </div>
 
-        ${renderHiddenSection(hiddenRows, hiddenItems.length)}
-        ${renderSection(`Wohnungen (${wohnungen.length})`, wohnungen, "wohnungen-list")}
-        ${renderSection(`Planungsprojekte (${planungsprojekte.length})`, planungsprojekte, "planungsprojekte-list")}
+        ${sections.hiddenSection}
+        ${sections.wohnungenSection}
+        ${sections.planungsprojekteSection}
 
         <div id="carousel" class="carousel hidden">
           <button class="close" aria-label="Close">×</button>

@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import {
   assetsDir,
+  baseUrl,
   planungsprojekteIntervalMinutes,
   rateLimitMonthly,
   storageStatePath,
@@ -14,11 +15,45 @@ import {
   scrapeWohnungen,
 } from "./scrapers/wohnberatung/wohnberatung-service.js";
 import { loadState, saveState } from "./scrapers/wohnberatung/state.js";
-import { getNextRefreshFallback, renderPage } from "../ui/render.js";
+import { getNextRefreshFallback, renderFragments, renderPage } from "../ui/render.js";
 
 const port = 3000;
 
 const nextRefresh = { wohnungen: 0, planungsprojekte: 0 };
+
+type StorageStateCookie = {
+  name: string;
+  value: string;
+  domain?: string;
+  path?: string;
+};
+
+const loadAuthCookies = async (): Promise<string> => {
+  const raw = await fs.readFile(storageStatePath, "utf8");
+  const parsed = JSON.parse(raw) as { cookies?: StorageStateCookie[] } | null;
+  const cookies = Array.isArray(parsed?.cookies) ? parsed.cookies : [];
+  const serialized = cookies
+    .filter((cookie) => cookie.domain?.includes("wohnberatung-wien.at"))
+    .map((cookie) => `${cookie.name}=${cookie.value}`)
+    .join("; ");
+  return serialized;
+};
+
+const detectInterestResult = (html: string) => {
+  if (/maximale Anzahl an Interessent/i.test(html)) return "limit";
+  if (/Sie haben sich unverbindlich angemeldet/i.test(html)) return "success";
+  if (/kein Interesse mehr/i.test(html)) return "signed";
+  if (/unverbindlich anmelden/i.test(html)) return "not_signed";
+  if (/eingetragen|angemeldet|Interesse/i.test(html)) return "success";
+  return "unknown";
+};
+
+const detectSignedFromResponse = (html: string) => {
+  if (/kein Interesse mehr/i.test(html)) return true;
+  if (/unverbindlich anmelden/i.test(html)) return false;
+  if (/Sie haben sich unverbindlich angemeldet/i.test(html)) return true;
+  return null;
+};
 
 const getNextRefreshAt = () => {
   const scheduled = [nextRefresh.wohnungen, nextRefresh.planungsprojekte].filter(
@@ -162,6 +197,94 @@ const main = async () => {
   });
 
   app.get("/favicon.ico", (_, res) => res.status(204).end());
+  app.post("/api/interest/:type/:id", async (req, res) => {
+    const { type, id } = req.params;
+    const action = (req.body as { action?: string; confirm?: boolean } | undefined)?.action;
+    const confirm =
+      (req.body as { action?: string; confirm?: boolean } | undefined)?.confirm ?? false;
+
+    if (!id || !action) {
+      res.status(400).json({ ok: false, message: "Missing action or id." });
+      return;
+    }
+
+    const page = type === "wohnungen" ? "wohnung" : type === "planungsprojekte" ? "projekt" : null;
+
+    if (!page) {
+      res.status(400).json({ ok: false, message: "Unknown item type." });
+      return;
+    }
+
+    const flag =
+      action === "add" ? "anmelden_confirm" : action === "remove" ? "delete_confirm" : "";
+
+    if (!flag) {
+      res.status(400).json({ ok: false, message: "Unknown action." });
+      return;
+    }
+
+    if (action === "remove" && !confirm) {
+      res.status(400).json({ ok: false, message: "Removal requires confirmation." });
+      return;
+    }
+
+    try {
+      const cookieHeader = await loadAuthCookies();
+      if (!cookieHeader) {
+        res.status(400).json({ ok: false, message: "Missing login cookies." });
+        return;
+      }
+
+      const url = new URL(baseUrl);
+      url.searchParams.set("page", page);
+      url.searchParams.set("id", id);
+      url.searchParams.set(flag, "true");
+
+      const response = await fetch(url.toString(), {
+        method: "GET",
+        headers: {
+          cookie: cookieHeader,
+          "user-agent": "flatfinder",
+        },
+      });
+
+      const html = await response.text();
+      const result = detectInterestResult(html);
+      const signedStatus = detectSignedFromResponse(html);
+
+      const collection =
+        type === "wohnungen"
+          ? state.wohnungen
+          : type === "planungsprojekte"
+            ? state.planungsprojekte
+            : null;
+
+      if (collection && typeof signedStatus === "boolean") {
+        const item = collection.find((entry) => entry.id === id);
+        if (item) {
+          item.flags.angemeldet = signedStatus;
+          state.updatedAt = new Date().toISOString();
+          await saveState(state);
+          notifyClients();
+        }
+      }
+
+      res.json({
+        ok: response.ok,
+        status: response.status,
+        result,
+        signed: typeof signedStatus === "boolean" ? signedStatus : undefined,
+      });
+    } catch (error) {
+      res.status(500).json({
+        ok: false,
+        message: error instanceof Error ? error.message : "Interest request failed.",
+      });
+    }
+  });
+  app.get("/api/fragment", (_, res) =>
+    res.json(renderFragments(state, { nextRefreshAt: getNextRefreshAtWithFallback() })),
+  );
   app.get("/api/state", (_, res) => res.json(state));
   app.get("/", (_, res) =>
     res.send(renderPage(state, { nextRefreshAt: getNextRefreshAtWithFallback() })),
