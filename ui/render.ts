@@ -2,8 +2,8 @@ import {
   planungsprojekteIntervalMinutes,
   rateLimitMonthly,
   wohnungssucheIntervalMinutes,
-} from "../scrapers/wohnberatung/config.js";
-import type { FlatfinderState, WohnungRecord } from "../scrapers/wohnberatung/state.js";
+} from "../src/scrapers/wohnberatung/config.js";
+import type { FlatfinderState, WohnungRecord } from "../src/scrapers/wohnberatung/state.js";
 
 export type RenderOptions = {
   nextRefreshAt: number;

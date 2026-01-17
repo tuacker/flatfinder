@@ -7,12 +7,12 @@
   },
   "scripts": {
     "scrape:wohnberatung:login": "tsx src/scrapers/wohnberatung/login.ts",
-    "build:ui": "tsc -p tsconfig.ui.json && cp src/ui/styles.css public/app.css",
+    "build:ui": "tsc -p ui/tsconfig.json && cp ui/styles.css public/app.css",
     "dev": "tsx scripts/dev.ts",
     "start": "tsx src/server.ts",
-    "lint": "oxlint src",
-    "format": "oxfmt --check src",
-    "format:fix": "oxfmt --write src"
+    "lint": "oxlint src ui",
+    "format": "oxfmt --check src ui",
+    "format:fix": "oxfmt --write src ui"
   },
   "dependencies": {
     "cheerio": "^1.0.0",

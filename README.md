@@ -29,8 +29,8 @@ npm run dev
 ```
 
 This watches:
-- `src/ui/app.ts` (TypeScript build to `public/app.js`)
-- `src/ui/styles.css` (copied to `public/app.css`)
+- `ui/app.ts` (TypeScript build to `public/app.js`)
+- `ui/styles.css` (copied to `public/app.css`)
 - `src/server.ts` (auto-restart)
 
 Build failures do not stop the watch process; it resumes once fixed.

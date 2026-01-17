@@ -10,7 +10,7 @@ const binDir = path.join(rootDir, "node_modules", ".bin");
 const tscPath = path.join(binDir, "tsc");
 const tsxPath = path.join(binDir, "tsx");
 
-const uiDir = path.join(rootDir, "src", "ui");
+const uiDir = path.join(rootDir, "ui");
 const uiCssPath = path.join(uiDir, "styles.css");
 const publicDir = path.join(rootDir, "public");
 const publicCssPath = path.join(publicDir, "app.css");
@@ -76,7 +76,7 @@ const main = async () => {
   await copyCss();
   const cssWatcher = watchCss();
 
-  const tsc = spawnProcess(tscPath, ["-p", "tsconfig.ui.json", "--watch", "--preserveWatchOutput"], "ui build");
+  const tsc = spawnProcess(tscPath, ["-p", "ui/tsconfig.json", "--watch", "--preserveWatchOutput"], "ui build");
   const server = spawnProcess(tsxPath, ["watch", "src/server.ts"], "server");
 
   let shuttingDown = false;

@@ -14,7 +14,7 @@ import {
   scrapeWohnungen,
 } from "./scrapers/wohnberatung/wohnberatung-service.js";
 import { loadState, saveState } from "./scrapers/wohnberatung/state.js";
-import { getNextRefreshFallback, renderPage } from "./ui/render.js";
+import { getNextRefreshFallback, renderPage } from "../ui/render.js";
 
 const port = 3000;
 
