@@ -253,6 +253,12 @@ const updateSwapIndicatorsForList = (list: HTMLElement) => {
 
   if (list.getAttribute("data-rank-mode") !== "true") return;
 
+  rows.forEach((row, index) => {
+    const rankBadge = row.querySelector<HTMLElement>(".title-meta.rank");
+    if (!rankBadge) return;
+    rankBadge.textContent = `#${index + 1}`;
+  });
+
   const signed = rows.filter((row) => row.classList.contains("is-signed"));
   const droppableSigned = signed.filter((row) => row.getAttribute("data-locked") !== "true");
   const desired = rows.slice(0, signupLimit);
@@ -279,14 +285,21 @@ const updateSwapIndicatorsForList = (list: HTMLElement) => {
 
   if (!desiredUnsigned.length || droppableSigned.length === 0) return;
 
-  const signedByWorst = [...droppableSigned].sort((a, b) => {
-    const aIndex = rows.indexOf(a);
-    const bIndex = rows.indexOf(b);
-    return bIndex - aIndex;
-  });
+  const compareByOrder = (left: HTMLElement, right: HTMLElement) => {
+    const leftIndex = rows.indexOf(left);
+    const rightIndex = rows.indexOf(right);
+    return leftIndex - rightIndex;
+  };
 
-  desiredUnsigned.forEach((targetRow, index) => {
-    const dropRow = signedByWorst[index];
+  const signedByWorst = [...droppableSigned].sort(compareByOrder).reverse();
+  const targetsByBest = [...desiredUnsigned].sort(compareByOrder);
+
+  targetsByBest.forEach((targetRow) => {
+    const eligibleIndex = signedByWorst.findIndex(
+      (signedRow) => compareByOrder(targetRow, signedRow) < 0,
+    );
+    if (eligibleIndex === -1) return;
+    const dropRow = signedByWorst.splice(eligibleIndex, 1)[0];
     if (!dropRow) return;
     const waiting = targetRow.getAttribute("data-maxlimit") === "true";
     const dropTitle = titleForRow(dropRow);
@@ -306,19 +319,13 @@ const findSwapCandidate = (type: string) => {
   const rows = Array.from(document.querySelectorAll<HTMLElement>(`.row[data-type='${type}']`));
   const signed = rows.filter((row) => row.classList.contains("is-signed"));
   if (signed.length < signupLimit) return null;
-  const droppableSigned = signed.filter((row) => row.getAttribute("data-locked") !== "true");
-  if (!droppableSigned.length) return null;
-  const worstSigned = droppableSigned.reduce((worst, row) =>
-    compareRowPriority(row, worst) > 0 ? row : worst,
-  );
   const candidates = rows.filter((row) => {
     if (row.classList.contains("is-signed")) return false;
     if (row.getAttribute("data-hidden-at")) return false;
     return Boolean(row.getAttribute("data-requested-at"));
   });
-  const eligible = candidates.filter((row) => compareRowPriority(row, worstSigned) < 0);
-  if (!eligible.length) return null;
-  return eligible.reduce((best, row) => (compareRowPriority(row, best) < 0 ? row : best));
+  if (!candidates.length) return null;
+  return candidates.reduce((best, row) => (compareRowPriority(row, best) < 0 ? row : best));
 };
 
 const initRemoveHover = () => {
@@ -593,6 +600,106 @@ const sendInterestRequest = async (options: {
   }
 };
 
+const pendingRemoveConfirm = new Set<string>();
+
+const getConfirmKey = (type: string, id: string) => `${type}:${id}`;
+
+const mountRemoveConfirm = (
+  container: HTMLElement,
+  button: HTMLButtonElement,
+  type: string,
+  id: string,
+) => {
+  if (container.querySelector(".js-interest-confirm")) return;
+  const originalHtml = container.innerHTML;
+  const originalWidth = Math.max(0, Math.round(button.getBoundingClientRect().width));
+
+  const confirmButton = document.createElement("button");
+  confirmButton.type = "button";
+  confirmButton.className = "btn btn-danger js-interest-confirm";
+  confirmButton.textContent = "Confirm remove";
+
+  const cancelButton = document.createElement("button");
+  cancelButton.type = "button";
+  cancelButton.className = "btn btn-muted js-interest-cancel";
+  cancelButton.textContent = "Cancel";
+  if (originalWidth > 0) {
+    cancelButton.style.width = `${originalWidth}px`;
+  }
+
+  const confirmWrap = document.createElement("div");
+  confirmWrap.className = "interest-confirm";
+  confirmWrap.append(confirmButton, cancelButton);
+  container.replaceChildren(confirmWrap);
+
+  requestAnimationFrame(() => {
+    confirmWrap.classList.add("is-visible");
+  });
+
+  cancelButton.addEventListener("click", (cancelEvent) => {
+    cancelEvent.preventDefault();
+    pendingRemoveConfirm.delete(getConfirmKey(type, id));
+    container.innerHTML = originalHtml;
+    initInterestActions();
+    initLockActions();
+    initRemoveHover();
+    initRankActions();
+  });
+
+  confirmButton.addEventListener("click", async (confirmEvent) => {
+    confirmEvent.preventDefault();
+    confirmButton.textContent = "Removing…";
+    confirmButton.disabled = true;
+    cancelButton.disabled = true;
+    pendingRemoveConfirm.delete(getConfirmKey(type, id));
+    const result = await sendInterestRequest({ button: confirmButton, action: "remove", type, id });
+    if (result.ok && result.signed !== null) {
+      container.innerHTML = originalHtml;
+      initInterestActions();
+      initLockActions();
+      initRemoveHover();
+      initRankActions();
+      await refreshFromServer();
+      return;
+    }
+    container.innerHTML = originalHtml;
+    initInterestActions();
+    initLockActions();
+    initRemoveHover();
+    initRankActions();
+  });
+};
+
+const syncPendingRemoveConfirms = () => {
+  pendingRemoveConfirm.forEach((key) => {
+    const [type, id] = key.split(":");
+    if (!type || !id) {
+      pendingRemoveConfirm.delete(key);
+      return;
+    }
+    const row = document.querySelector<HTMLElement>(
+      `.row[data-type='${type}'][data-id='${CSS.escape(id)}']`,
+    );
+    if (!row) {
+      pendingRemoveConfirm.delete(key);
+      return;
+    }
+    const container = row.querySelector<HTMLElement>(".row-header-interest");
+    if (!container) {
+      pendingRemoveConfirm.delete(key);
+      return;
+    }
+    const removeButton = container.querySelector<HTMLButtonElement>(
+      ".js-interest-action[data-action='remove']",
+    );
+    if (!removeButton) {
+      pendingRemoveConfirm.delete(key);
+      return;
+    }
+    mountRemoveConfirm(container, removeButton, type, id);
+  });
+};
+
 const initInterestActions = () => {
   document.querySelectorAll<HTMLButtonElement>(".js-interest-action").forEach((button) => {
     bindOnce(button, "boundInterest", async (event) => {
@@ -606,61 +713,8 @@ const initInterestActions = () => {
       if (!container) return;
 
       if (action === "remove") {
-        if (container.querySelector(".js-interest-confirm")) return;
-        const originalHtml = container.innerHTML;
-        const originalWidth = Math.max(0, Math.round(button.getBoundingClientRect().width));
-
-        const confirmButton = document.createElement("button");
-        confirmButton.type = "button";
-        confirmButton.className = "btn btn-danger js-interest-confirm";
-        confirmButton.textContent = "Confirm remove";
-
-        const cancelButton = document.createElement("button");
-        cancelButton.type = "button";
-        cancelButton.className = "btn btn-muted js-interest-cancel";
-        cancelButton.textContent = "Cancel";
-        if (originalWidth > 0) {
-          cancelButton.style.width = `${originalWidth}px`;
-        }
-
-        const confirmWrap = document.createElement("div");
-        confirmWrap.className = "interest-confirm";
-        confirmWrap.append(confirmButton, cancelButton);
-        container.replaceChildren(confirmWrap);
-
-        requestAnimationFrame(() => {
-          confirmWrap.classList.add("is-visible");
-        });
-
-        cancelButton.addEventListener("click", (cancelEvent) => {
-          cancelEvent.preventDefault();
-          container.innerHTML = originalHtml;
-          initInterestActions();
-          initLockActions();
-          initRemoveHover();
-          initRankActions();
-        });
-
-        confirmButton.addEventListener("click", async (confirmEvent) => {
-          confirmEvent.preventDefault();
-          confirmButton.textContent = "Removing…";
-          confirmButton.disabled = true;
-          cancelButton.disabled = true;
-          const result = await sendInterestRequest({ button: confirmButton, action, type, id });
-          if (result.ok && result.signed !== null) {
-            container.innerHTML = originalHtml;
-            initInterestActions();
-            initLockActions();
-            initRemoveHover();
-            initRankActions();
-            await refreshFromServer();
-            return;
-          }
-          container.innerHTML = originalHtml;
-          initInterestActions();
-          initRankActions();
-        });
-
+        pendingRemoveConfirm.add(getConfirmKey(type, id));
+        mountRemoveConfirm(container, button, type, id);
         return;
       }
 
@@ -943,6 +997,7 @@ const applyFragments = (payload: FragmentPayload) => {
   initEntryActions();
   initCarousel();
   initRankActions();
+  syncPendingRemoveConfirms();
   updateCountdowns();
   updateRefreshCountdowns();
   highlightNew();
