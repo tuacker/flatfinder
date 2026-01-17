@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { statePath } from "./config.js";
+import { statePath, telegramConfigPath } from "./config.js";
 import type { Planungsprojekt } from "./parse-planungsprojekte.js";
 import type { WohnungDetail } from "./parse-wohnung-detail.js";
 import type { WohnungListItem } from "./parse-wohnungen-list.js";
@@ -27,6 +27,7 @@ export type PlanungsprojektRecord = Planungsprojekt & {
   hiddenAt?: string | null;
   detail?: PlanungsprojektDetail;
   interest?: InterestInfo;
+  telegramNotifiedAt?: string | null;
 };
 
 export type WohnungRecord = WohnungListItem & {
@@ -41,11 +42,23 @@ export type WohnungRecord = WohnungListItem & {
     images?: string[];
   };
   interest?: InterestInfo;
+  telegramNotifiedAt?: string | null;
 };
 
 export type RateLimitState = {
   month: string;
   count: number;
+};
+
+export type TelegramConfig = {
+  enabled: boolean;
+  botToken: string | null;
+  chatId: string | null;
+  includeImages: boolean;
+  enableActions: boolean;
+  webhookToken: string | null;
+  pollingEnabled: boolean;
+  pollingOffset: number | null;
 };
 
 export type FlatfinderState = {
@@ -57,6 +70,30 @@ export type FlatfinderState = {
 };
 
 const currentMonth = () => new Date().toISOString().slice(0, 7);
+
+export const defaultTelegramConfig = (): TelegramConfig => ({
+  enabled: false,
+  botToken: null,
+  chatId: null,
+  includeImages: true,
+  enableActions: false,
+  webhookToken: null,
+  pollingEnabled: false,
+  pollingOffset: null,
+});
+
+export const normalizeTelegramConfig = (
+  raw: Partial<TelegramConfig> | null | undefined,
+): TelegramConfig => ({
+  enabled: Boolean(raw?.enabled),
+  botToken: typeof raw?.botToken === "string" ? raw.botToken : null,
+  chatId: typeof raw?.chatId === "string" ? raw.chatId : null,
+  includeImages: raw?.includeImages !== false,
+  enableActions: Boolean(raw?.enableActions),
+  webhookToken: typeof raw?.webhookToken === "string" ? raw.webhookToken : null,
+  pollingEnabled: Boolean(raw?.pollingEnabled),
+  pollingOffset: typeof raw?.pollingOffset === "number" ? raw.pollingOffset : null,
+});
 
 const defaultState = (): FlatfinderState => ({
   updatedAt: null,
@@ -98,4 +135,21 @@ export const loadState = async (): Promise<FlatfinderState> => {
 export const saveState = async (state: FlatfinderState) => {
   await fs.mkdir(path.dirname(statePath), { recursive: true });
   await fs.writeFile(statePath, JSON.stringify(state, null, 2), "utf8");
+};
+
+export const loadTelegramConfig = async (): Promise<TelegramConfig> => {
+  try {
+    const data = await fs.readFile(telegramConfigPath, "utf8");
+    return normalizeTelegramConfig(JSON.parse(data) as TelegramConfig);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return defaultTelegramConfig();
+    }
+    throw error;
+  }
+};
+
+export const saveTelegramConfig = async (config: TelegramConfig) => {
+  await fs.mkdir(path.dirname(telegramConfigPath), { recursive: true });
+  await fs.writeFile(telegramConfigPath, JSON.stringify(config, null, 2), "utf8");
 };

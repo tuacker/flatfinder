@@ -27,6 +27,7 @@ const buildRecord = async (
     hiddenAt: previous?.hiddenAt ?? null,
     detail,
     interest: previous?.interest,
+    telegramNotifiedAt: previous?.telegramNotifiedAt ?? null,
   };
 };
 

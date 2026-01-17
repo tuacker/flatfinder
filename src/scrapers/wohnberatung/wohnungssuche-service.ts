@@ -144,6 +144,7 @@ const buildRecord = (
   detail: previous?.detail,
   assets: previous?.assets,
   interest: previous?.interest,
+  telegramNotifiedAt: previous?.telegramNotifiedAt ?? null,
 });
 
 export const scrapeWohnungen = async (state: FlatfinderState, rateLimiter: RateLimiter) => {

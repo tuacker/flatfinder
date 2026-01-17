@@ -14,8 +14,22 @@ import {
   scrapePlanungsprojekte,
   scrapeWohnungen,
 } from "./scrapers/wohnberatung/wohnberatung-service.js";
-import { loadState, saveState, type InterestInfo } from "./scrapers/wohnberatung/state.js";
+import {
+  loadState,
+  saveState,
+  defaultTelegramConfig,
+  loadTelegramConfig,
+  saveTelegramConfig,
+  type InterestInfo,
+  type TelegramConfig,
+} from "./scrapers/wohnberatung/state.js";
 import { getNextRefreshFallback, renderFragments, renderPage } from "../ui/render.js";
+import {
+  fetchTelegramUpdates,
+  notifyTelegramNewItems,
+  sendTelegramMessage,
+  telegramRequest,
+} from "./telegram.js";
 
 const port = 3000;
 
@@ -60,6 +74,8 @@ const fetchWohnberatungHtml = async (url: string, cookieHeader: string) => {
   const html = await response.text();
   return { response, html };
 };
+
+const nowIso = () => new Date().toISOString();
 
 const signupLimit = 3;
 const interestRefreshIntervalMs = 15_000;
@@ -145,6 +161,14 @@ const getSwapCandidates = (
   }>,
 ) => getSignedItems(items).filter((item) => !isLocked(item));
 
+const getPageForType = (type: "wohnungen" | "planungsprojekte") =>
+  type === "wohnungen" ? "wohnung" : "projekt";
+
+const ensureInterest = <T extends { interest?: InterestInfo }>(item: T) => {
+  if (!item.interest) item.interest = {};
+  return item.interest;
+};
+
 const getWorstSignedItem = (
   items: Array<{ id?: string | null; interest?: { rank?: number | null; requestedAt?: string } }>,
 ) => {
@@ -186,9 +210,9 @@ const scheduleWatch = (item: {
   interest?: { watch?: { nextCheckAt?: string | null } };
 }) => {
   const nextCheckAt = new Date(Date.now() + getWatchDelayMs(item.id)).toISOString();
-  if (!item.interest) item.interest = {};
-  item.interest.watch = {
-    ...item.interest.watch,
+  const interest = ensureInterest(item);
+  interest.watch = {
+    ...interest.watch,
     nextCheckAt,
   };
 };
@@ -196,6 +220,16 @@ const scheduleWatch = (item: {
 const clearWatch = (item: { interest?: { watch?: { nextCheckAt?: string | null } } }) => {
   if (!item.interest) return;
   item.interest.watch = undefined;
+};
+
+const markSigned = (
+  item: { flags: { angemeldet: boolean }; interest?: InterestInfo },
+  nowIso: string,
+) => {
+  item.flags.angemeldet = true;
+  const interest = ensureInterest(item);
+  interest.requestedAt = interest.requestedAt ?? nowIso;
+  clearWatch(item);
 };
 
 const executeSwap = async (options: {
@@ -208,7 +242,7 @@ const executeSwap = async (options: {
   const { type, target, drop, cookieHeader, nowIso } = options;
   if (!target.id || !drop.id) return { swapped: false };
   if (isLocked(drop)) return { swapped: false, result: "locked" };
-  const page = type === "wohnungen" ? "wohnung" : "projekt";
+  const page = getPageForType(type);
   const dropSnapshot = drop.interest ? { ...drop.interest } : undefined;
 
   const { html: dropHtml } = await fetchWohnberatungHtml(
@@ -224,7 +258,6 @@ const executeSwap = async (options: {
     watch: undefined,
   };
 
-  if (!target.interest) target.interest = {};
   const { html: confirmHtml } = await fetchWohnberatungHtml(
     buildWohnberatungUrl(page, target.id, "anmelden_confirm"),
     cookieHeader,
@@ -232,8 +265,7 @@ const executeSwap = async (options: {
   const targetSigned = detectSignedFromResponse(confirmHtml);
   const result = detectInterestResult(confirmHtml);
   if (targetSigned === true) {
-    target.flags.angemeldet = true;
-    clearWatch(target);
+    markSigned(target, nowIso);
     return { swapped: true, result };
   }
 
@@ -276,16 +308,11 @@ const fillOpenSlots = async (options: {
   for (const item of candidates) {
     if (signedCount >= signupLimit) break;
     if (!item.id) continue;
-    const page = type === "wohnungen" ? "wohnung" : "projekt";
+    const page = getPageForType(type);
     const { html } = await fetchWohnberatungHtml(buildWohnberatungUrl(page, item.id), cookieHeader);
     const signedFromDetail = detectSignedFromResponse(html);
     if (signedFromDetail === true) {
-      item.flags.angemeldet = true;
-      item.interest = {
-        ...item.interest,
-        requestedAt: item.interest?.requestedAt ?? nowIso,
-      };
-      clearWatch(item);
+      markSigned(item, nowIso);
       signedCount += 1;
       signedItems = getSignedItems(collection);
       didUpdate = true;
@@ -304,12 +331,7 @@ const fillOpenSlots = async (options: {
     );
     const signedStatus = detectSignedFromResponse(confirmHtml);
     if (signedStatus === true) {
-      item.flags.angemeldet = true;
-      item.interest = {
-        ...item.interest,
-        requestedAt: item.interest?.requestedAt ?? nowIso,
-      };
-      clearWatch(item);
+      markSigned(item, nowIso);
       signedCount += 1;
       signedItems = getSignedItems(collection);
       didUpdate = true;
@@ -400,6 +422,7 @@ const ensureStorageState = async () => {
 const main = async () => {
   await ensureStorageState();
   const state = await loadState();
+  let telegramConfig = await loadTelegramConfig();
 
   const app = express();
   app.use(express.json());
@@ -416,6 +439,13 @@ const main = async () => {
     for (const client of clients) {
       client.write(`data: ${payload}\n\n`);
     }
+  };
+
+  const persistState = async (updatedAt: string = nowIso()) => {
+    state.updatedAt = updatedAt;
+    await saveState(state);
+    notifyClients();
+    return updatedAt;
   };
 
   let interestRefreshRunning = false;
@@ -454,7 +484,7 @@ const main = async () => {
         if (!cookieHeader) return;
 
         const now = Date.now();
-        const nowIso = new Date(now).toISOString();
+        const nowStamp = new Date(now).toISOString();
         let didUpdate = false;
 
         const processType = async (type: "wohnungen" | "planungsprojekte") => {
@@ -506,23 +536,22 @@ const main = async () => {
               continue;
             }
 
-            const page = type === "wohnungen" ? "wohnung" : "projekt";
+            const page = getPageForType(type);
             const { html } = await fetchWohnberatungHtml(
               buildWohnberatungUrl(page, item.id),
               cookieHeader,
             );
             const signedFromDetail = detectSignedFromResponse(html);
             if (signedFromDetail === true) {
-              item.flags.angemeldet = true;
-              clearWatch(item);
+              markSigned(item, nowStamp);
               signedCount += 1;
               signedItems = getSignedItems(collection);
               swapCandidates = getSwapCandidates(collection);
               didUpdate = true;
               continue;
             }
-            item.interest.watch = {
-              lastCheckAt: nowIso,
+            ensureInterest(item).watch = {
+              lastCheckAt: nowStamp,
               nextCheckAt: new Date(now + getWatchDelayMs(item.id)).toISOString(),
             };
             didUpdate = true;
@@ -537,8 +566,7 @@ const main = async () => {
               );
               const signedStatus = detectSignedFromResponse(confirmHtml);
               if (signedStatus === true) {
-                item.flags.angemeldet = true;
-                clearWatch(item);
+                markSigned(item, nowStamp);
                 signedCount += 1;
                 signedItems = getSignedItems(collection);
                 swapCandidates = getSwapCandidates(collection);
@@ -558,7 +586,7 @@ const main = async () => {
                   target: item,
                   drop: worst,
                   cookieHeader,
-                  nowIso,
+                  nowIso: nowStamp,
                 });
                 if (swapResult.swapped) {
                   signedItems = getSignedItems(collection);
@@ -575,9 +603,7 @@ const main = async () => {
         await processType("planungsprojekte");
 
         if (didUpdate) {
-          state.updatedAt = nowIso;
-          await saveState(state);
-          notifyClients();
+          await persistState(nowStamp);
         }
       } catch (error) {
         console.error("[interest-refresh]", error instanceof Error ? error.message : error);
@@ -586,6 +612,144 @@ const main = async () => {
         scheduleInterestRefresh();
       }
     });
+  };
+
+  const ensureTelegramConfig = () => {
+    if (!telegramConfig) {
+      telegramConfig = defaultTelegramConfig();
+    }
+    return telegramConfig;
+  };
+
+  const persistTelegramConfig = async (config?: TelegramConfig) => {
+    if (config) {
+      telegramConfig = config;
+    }
+    await saveTelegramConfig(ensureTelegramConfig());
+  };
+
+  const handleTelegramCallback = async (
+    config: TelegramConfig,
+    callback: { id: string; data?: string } | undefined,
+  ) => {
+    if (!callback?.data) return;
+    if (callback.data === "test:complete") {
+      await telegramRequest(config, "answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: "Test complete.",
+        show_alert: false,
+      });
+      if (config.botToken && config.chatId) {
+        await sendTelegramMessage(config, "Test complete.");
+      }
+      return;
+    }
+    if (!callback.data.startsWith("interest:")) return;
+    const [, rawType, id] = callback.data.split(":");
+    const type = rawType === "wohnungen" ? "wohnungen" : "planungsprojekte";
+    const collection = getCollection(state, type);
+    const item = collection?.find((entry) => entry.id === id);
+    if (!collection || !item) return;
+    const now = nowIso();
+    try {
+      const result = await handleAddInterest(type, item, collection, now);
+      if (result.ok) {
+        await persistState(now);
+        scheduleInterestRefresh();
+      }
+      await telegramRequest(config, "answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: result.ok ? "Marked as interested." : "Failed to mark interested.",
+        show_alert: false,
+      });
+    } catch {
+      await telegramRequest(config, "answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: "Interest action failed.",
+        show_alert: false,
+      });
+    }
+  };
+
+  const handleAddInterest = async (
+    type: "wohnungen" | "planungsprojekte",
+    item: { id?: string | null; flags: { angemeldet: boolean }; interest?: InterestInfo },
+    collection: Array<{
+      id?: string | null;
+      flags: { angemeldet: boolean };
+      interest?: InterestInfo;
+    }>,
+    nowIso: string,
+  ) => {
+    const interest = ensureInterest(item);
+    if (!interest.requestedAt) interest.requestedAt = nowIso;
+
+    const signedItems = getSignedItems(collection);
+    const signedCount = signedItems.length;
+    const swapCandidates = getSwapCandidates(collection);
+    const page = getPageForType(type);
+
+    const cookieHeader = await loadAuthCookies();
+    if (!cookieHeader) {
+      return { ok: false, message: "Missing login cookies." } as const;
+    }
+
+    if (item.flags.angemeldet) {
+      return { ok: true, signed: true } as const;
+    }
+
+    if (signedCount < signupLimit) {
+      const { response, html } = await fetchWohnberatungHtml(
+        buildWohnberatungUrl(page, item.id ?? "", "anmelden_confirm"),
+        cookieHeader,
+      );
+      const result = detectInterestResult(html);
+      const signedStatus = detectSignedFromResponse(html);
+
+      if (signedStatus === true) {
+        markSigned(item, nowIso);
+      } else if (result === "full" || result === "available" || result === "unknown") {
+        scheduleWatch(item);
+      }
+
+      return {
+        ok: response.ok,
+        status: response.status,
+        signed: item.flags.angemeldet,
+        result,
+      } as const;
+    }
+
+    const shouldSwap = shouldWatchWhenFull(item, swapCandidates);
+    if (!shouldSwap) {
+      clearWatch(item);
+      return { ok: true, signed: false, skipped: "rank" } as const;
+    }
+
+    const { html } = await fetchWohnberatungHtml(
+      buildWohnberatungUrl(page, item.id ?? ""),
+      cookieHeader,
+    );
+    if (!isSignupAvailable(html)) {
+      scheduleWatch(item);
+      return { ok: true, signed: false, waiting: true } as const;
+    }
+
+    const worst = getWorstSignedItem(swapCandidates);
+    if (worst) {
+      const swapResult = await executeSwap({
+        type,
+        target: item,
+        drop: worst,
+        cookieHeader,
+        nowIso,
+      });
+      if (swapResult.swapped) {
+        return { ok: true, signed: item.flags.angemeldet, swapped: true } as const;
+      }
+    }
+
+    return { ok: true, signed: item.flags.angemeldet, swapped: false } as const;
   };
 
   app.get("/events", (req, res) => {
@@ -602,6 +766,165 @@ const main = async () => {
     req.on("close", () => {
       clients.delete(res);
     });
+  });
+
+  let telegramPollingTimer: NodeJS.Timeout | null = null;
+  let telegramPollingRunning = false;
+
+  const scheduleTelegramPolling = (delayMs = 0) => {
+    if (telegramPollingTimer) clearTimeout(telegramPollingTimer);
+    telegramPollingTimer = setTimeout(() => {
+      void runTelegramPolling();
+    }, delayMs);
+  };
+
+  const runTelegramPolling = async () => {
+    if (telegramPollingRunning) return;
+    telegramPollingRunning = true;
+    try {
+      const config = ensureTelegramConfig();
+      if (
+        !config.enabled ||
+        !config.enableActions ||
+        !config.pollingEnabled ||
+        !config.botToken ||
+        !config.chatId
+      ) {
+        return;
+      }
+
+      const result = await fetchTelegramUpdates(config, {
+        offset: config.pollingOffset ?? 0,
+        timeoutSeconds: 30,
+        limit: 100,
+        allowedUpdates: ["callback_query"],
+      });
+
+      if (!result.ok) return;
+
+      let nextOffset = config.pollingOffset ?? 0;
+      for (const update of result.updates) {
+        nextOffset = Math.max(nextOffset, update.update_id + 1);
+        await handleTelegramCallback(config, update.callback_query);
+      }
+
+      if (nextOffset !== (config.pollingOffset ?? 0)) {
+        config.pollingOffset = nextOffset;
+        await persistTelegramConfig();
+      }
+    } finally {
+      telegramPollingRunning = false;
+      scheduleTelegramPolling(1000);
+    }
+  };
+
+  app.post("/api/telegram/config", async (req, res) => {
+    const body = req.body as Partial<TelegramConfig> | undefined;
+    const config = ensureTelegramConfig();
+    const wasEnabled = config.enabled;
+    const wasPollingEnabled = config.pollingEnabled;
+
+    config.enabled = Boolean(body?.enabled);
+    config.botToken = body?.botToken ? String(body.botToken).trim() : null;
+    config.chatId = body?.chatId ? String(body.chatId).trim() : null;
+    config.includeImages = body?.includeImages !== false;
+    config.enableActions = Boolean(body?.enableActions);
+    config.pollingEnabled = Boolean(body?.pollingEnabled);
+    config.webhookToken = body?.webhookToken ? String(body.webhookToken).trim() : null;
+
+    if (config.enabled && (!config.botToken || !config.chatId)) {
+      res.status(400).json({ ok: false, message: "Bot token and chat ID are required." });
+      return;
+    }
+    if (config.enableActions && !config.pollingEnabled && !config.webhookToken) {
+      res.status(400).json({ ok: false, message: "Webhook token required for actions." });
+      return;
+    }
+
+    if (config.enabled && !wasEnabled) {
+      const now = nowIso();
+      state.wohnungen.forEach((item) => {
+        item.telegramNotifiedAt = now;
+      });
+      state.planungsprojekte.forEach((item) => {
+        item.telegramNotifiedAt = now;
+      });
+      await persistState(now);
+    }
+
+    if (config.pollingEnabled && !wasPollingEnabled && config.botToken) {
+      let offset = config.pollingOffset ?? 0;
+      while (true) {
+        const result = await fetchTelegramUpdates(config, {
+          offset,
+          timeoutSeconds: 0,
+          limit: 100,
+          allowedUpdates: ["callback_query"],
+        });
+        if (!result.ok || result.updates.length === 0) break;
+        offset = result.updates[result.updates.length - 1].update_id + 1;
+        if (result.updates.length < 100) break;
+      }
+      config.pollingOffset = offset;
+    }
+
+    await persistTelegramConfig();
+    scheduleTelegramPolling();
+
+    res.json({ ok: true, config });
+  });
+
+  app.post("/api/telegram/test", async (_req, res) => {
+    const config = ensureTelegramConfig();
+    if (!config.botToken || !config.chatId) {
+      res.status(400).json({ ok: false, message: "Bot token and chat ID are required." });
+      return;
+    }
+    const canUseActions = config.enableActions && (config.pollingEnabled || config.webhookToken);
+    const ok = await sendTelegramMessage(
+      config,
+      `Flatfinder test message (${nowIso()})`,
+      canUseActions
+        ? {
+            keyboard: {
+              inline_keyboard: [
+                [
+                  {
+                    text: "Test complete",
+                    callback_data: "test:complete",
+                  },
+                ],
+              ],
+            },
+          }
+        : undefined,
+    );
+    if (!ok) {
+      res.status(500).json({ ok: false, message: "Test message failed." });
+      return;
+    }
+    res.json({ ok: true });
+  });
+
+  app.post("/api/telegram/webhook/:token", async (req, res) => {
+    const token = req.params.token;
+    const config = ensureTelegramConfig();
+    if (!config.enableActions || !config.webhookToken || token !== config.webhookToken) {
+      res.status(401).json({ ok: false });
+      return;
+    }
+
+    const update = req.body as {
+      callback_query?: {
+        id: string;
+        data?: string;
+      };
+    };
+
+    const callback = update?.callback_query;
+    await handleTelegramCallback(config, callback);
+
+    res.json({ ok: true });
   });
 
   app.post("/api/items/:type/:id", async (req, res) => {
@@ -626,7 +949,7 @@ const main = async () => {
       return;
     }
 
-    const now = new Date().toISOString();
+    const now = nowIso();
 
     if (action === "toggleSeen") {
       item.seenAt = item.seenAt ? null : now;
@@ -637,9 +960,7 @@ const main = async () => {
       return;
     }
 
-    state.updatedAt = now;
-    await saveState(state);
-    notifyClients();
+    await persistState(now);
 
     res.json({
       ok: true,
@@ -672,8 +993,8 @@ const main = async () => {
       return;
     }
 
-    const page = type === "wohnungen" ? "wohnung" : "projekt";
-    const nowIso = new Date().toISOString();
+    const page = getPageForType(type);
+    const now = nowIso();
 
     if (action === "drop") {
       if (item.flags.angemeldet) {
@@ -687,9 +1008,7 @@ const main = async () => {
         locked: false,
         watch: undefined,
       };
-      state.updatedAt = nowIso;
-      await saveState(state);
-      notifyClients();
+      await persistState(now);
       res.json({ ok: true, signed: item.flags.angemeldet });
       return;
     }
@@ -699,12 +1018,10 @@ const main = async () => {
         res.status(400).json({ ok: false, message: "Only signed items can be locked." });
         return;
       }
-      if (!item.interest) item.interest = {};
-      item.interest.locked = action === "lock";
-      state.updatedAt = nowIso;
-      await saveState(state);
-      notifyClients();
-      res.json({ ok: true, signed: item.flags.angemeldet, locked: item.interest.locked });
+      const interest = ensureInterest(item);
+      interest.locked = action === "lock";
+      await persistState(now);
+      res.json({ ok: true, signed: item.flags.angemeldet, locked: interest.locked });
       return;
     }
 
@@ -737,16 +1054,16 @@ const main = async () => {
         const keepInterested = Boolean(
           (req.body as { keepInterested?: boolean } | undefined)?.keepInterested,
         );
-        if (!item.interest) item.interest = {};
-        item.interest.watch = undefined;
+        const interest = ensureInterest(item);
+        interest.watch = undefined;
         if (keepInterested) {
-          if (!item.interest.requestedAt) item.interest.requestedAt = nowIso;
+          if (!interest.requestedAt) interest.requestedAt = now;
         } else {
-          item.interest.requestedAt = null;
-          item.interest.rank = null;
+          interest.requestedAt = null;
+          interest.rank = null;
         }
         if (!item.flags.angemeldet) {
-          item.interest.locked = false;
+          interest.locked = false;
         }
 
         let didFill = false;
@@ -754,7 +1071,7 @@ const main = async () => {
           didFill = await fillOpenSlots({
             type: type as "wohnungen" | "planungsprojekte",
             cookieHeader,
-            nowIso: new Date().toISOString(),
+            nowIso: nowIso(),
           });
         } catch (fillError) {
           console.error(
@@ -763,9 +1080,7 @@ const main = async () => {
           );
         }
 
-        state.updatedAt = new Date().toISOString();
-        await saveState(state);
-        notifyClients();
+        await persistState();
         scheduleInterestRefresh();
 
         res.json({
@@ -783,103 +1098,20 @@ const main = async () => {
       return;
     }
 
-    if (!item.interest) item.interest = {};
-    if (!item.interest.requestedAt) item.interest.requestedAt = nowIso;
-
-    const signedItems = getSignedItems(collection);
-    const signedCount = signedItems.length;
-    const swapCandidates = getSwapCandidates(collection);
-
     try {
-      const cookieHeader = await loadAuthCookies();
-      if (!cookieHeader) {
-        res.status(400).json({ ok: false, message: "Missing login cookies." });
+      const result = await handleAddInterest(
+        type as "wohnungen" | "planungsprojekte",
+        item,
+        collection,
+        nowIso,
+      );
+      if (!result.ok) {
+        res.status(400).json(result);
         return;
       }
-
-      if (item.flags.angemeldet) {
-        state.updatedAt = nowIso;
-        await saveState(state);
-        notifyClients();
-        scheduleInterestRefresh();
-        res.json({ ok: true, signed: true });
-        return;
-      }
-
-      if (signedCount < signupLimit) {
-        const { response, html } = await fetchWohnberatungHtml(
-          buildWohnberatungUrl(page, id, "anmelden_confirm"),
-          cookieHeader,
-        );
-        const result = detectInterestResult(html);
-        const signedStatus = detectSignedFromResponse(html);
-
-        if (signedStatus === true) {
-          item.flags.angemeldet = true;
-          clearWatch(item);
-        } else if (result === "full" || result === "available" || result === "unknown") {
-          scheduleWatch(item);
-        }
-
-        state.updatedAt = nowIso;
-        await saveState(state);
-        notifyClients();
-        scheduleInterestRefresh();
-
-        res.json({
-          ok: response.ok,
-          status: response.status,
-          signed: item.flags.angemeldet,
-          result,
-        });
-        return;
-      }
-
-      const shouldSwap = shouldWatchWhenFull(item, swapCandidates);
-      if (!shouldSwap) {
-        clearWatch(item);
-        state.updatedAt = nowIso;
-        await saveState(state);
-        notifyClients();
-        scheduleInterestRefresh();
-        res.json({ ok: true, signed: false, skipped: "rank" });
-        return;
-      }
-
-      const { html } = await fetchWohnberatungHtml(buildWohnberatungUrl(page, id), cookieHeader);
-      if (!isSignupAvailable(html)) {
-        scheduleWatch(item);
-        state.updatedAt = nowIso;
-        await saveState(state);
-        notifyClients();
-        scheduleInterestRefresh();
-        res.json({ ok: true, signed: false, waiting: true });
-        return;
-      }
-
-      const worst = getWorstSignedItem(swapCandidates);
-      if (worst) {
-        const swapResult = await executeSwap({
-          type: type as "wohnungen" | "planungsprojekte",
-          target: item,
-          drop: worst,
-          cookieHeader,
-          nowIso,
-        });
-        if (swapResult.swapped) {
-          state.updatedAt = nowIso;
-          await saveState(state);
-          notifyClients();
-          scheduleInterestRefresh();
-          res.json({ ok: true, signed: item.flags.angemeldet, swapped: true });
-          return;
-        }
-      }
-      state.updatedAt = nowIso;
-      await saveState(state);
-      notifyClients();
+      await persistState(nowIso);
       scheduleInterestRefresh();
-      res.json({ ok: true, signed: item.flags.angemeldet, swapped: false });
+      res.json(result);
     } catch (error) {
       res.status(500).json({
         ok: false,
@@ -896,16 +1128,16 @@ const main = async () => {
       return;
     }
 
-    const nowIso = new Date().toISOString();
+    const now = nowIso();
     const orderSet = new Set(order);
 
     order.forEach((id, index) => {
       const item = collection.find((entry) => entry.id === id);
       if (!item) return;
-      if (!item.interest) item.interest = {};
-      item.interest.rank = index + 1;
-      if (!item.interest.requestedAt) {
-        item.interest.requestedAt = nowIso;
+      const interest = ensureInterest(item);
+      interest.rank = index + 1;
+      if (!interest.requestedAt) {
+        interest.requestedAt = now;
       }
     });
 
@@ -916,23 +1148,23 @@ const main = async () => {
       }
     });
 
-    state.updatedAt = nowIso;
-    await saveState(state);
-    notifyClients();
+    await persistState(now);
     void runInterestRefresh();
 
     res.json({ ok: true });
   });
 
   app.get("/api/fragment", (_, res) =>
-    res.json(renderFragments(state, { nextRefreshAt: getNextRefreshAtWithFallback() })),
+    res.json(
+      renderFragments(state, { nextRefreshAt: getNextRefreshAtWithFallback() }, telegramConfig),
+    ),
   );
   app.get("/api/state", (_, res) => res.json(state));
-  app.get(["/hidden", "/interested"], (_, res) =>
-    res.send(renderPage(state, { nextRefreshAt: getNextRefreshAtWithFallback() })),
+  app.get(["/hidden", "/interested", "/settings"], (_, res) =>
+    res.send(renderPage(state, { nextRefreshAt: getNextRefreshAtWithFallback() }, telegramConfig)),
   );
   app.get("/", (_, res) =>
-    res.send(renderPage(state, { nextRefreshAt: getNextRefreshAtWithFallback() })),
+    res.send(renderPage(state, { nextRefreshAt: getNextRefreshAtWithFallback() }, telegramConfig)),
   );
 
   app.listen(port, () => {
@@ -942,15 +1174,20 @@ const main = async () => {
   const rateLimiter = createRateLimiter(state, rateLimitMonthly);
   void runInterestRefresh();
   scheduleInterestRefresh();
+  scheduleTelegramPolling();
 
   scheduleJob(
     "wohnungssuche",
     wohnungssucheIntervalMinutes * 60 * 1000,
     async () => {
       await scrapeWohnungen(state, rateLimiter);
-      state.lastScrapeAt = new Date().toISOString();
-      await saveState(state);
-      notifyClients();
+      await notifyTelegramNewItems(ensureTelegramConfig(), {
+        wohnungen: state.wohnungen,
+        planungsprojekte: [],
+      });
+      const now = nowIso();
+      state.lastScrapeAt = now;
+      await persistState(now);
     },
     (nextAt) => {
       nextRefresh.wohnungen = nextAt;
@@ -963,9 +1200,13 @@ const main = async () => {
     planungsprojekteIntervalMinutes * 60 * 1000,
     async () => {
       await scrapePlanungsprojekte(state, rateLimiter);
-      state.lastScrapeAt = new Date().toISOString();
-      await saveState(state);
-      notifyClients();
+      await notifyTelegramNewItems(ensureTelegramConfig(), {
+        wohnungen: [],
+        planungsprojekte: state.planungsprojekte,
+      });
+      const now = nowIso();
+      state.lastScrapeAt = now;
+      await persistState(now);
     },
     (nextAt) => {
       nextRefresh.planungsprojekte = nextAt;

@@ -3,7 +3,11 @@ import {
   rateLimitMonthly,
   wohnungssucheIntervalMinutes,
 } from "../src/scrapers/wohnberatung/config.js";
-import type { FlatfinderState, WohnungRecord } from "../src/scrapers/wohnberatung/state.js";
+import type {
+  FlatfinderState,
+  TelegramConfig,
+  WohnungRecord,
+} from "../src/scrapers/wohnberatung/state.js";
 
 export type RenderOptions = {
   nextRefreshAt: number;
@@ -20,6 +24,7 @@ export type RenderFragments = {
     interested: string;
     wohnungen: string;
     planungsprojekte: string;
+    settings: string;
   };
 };
 
@@ -138,6 +143,79 @@ type RenderRowOptions = {
   showRankLabel?: boolean;
 };
 
+type InterestRenderState = {
+  isSigned: boolean;
+  isInterested: boolean;
+  isLocked: boolean;
+  badges: string;
+  interestButtonLabel: string;
+  interestAction: string;
+  interestButtonClass: string;
+};
+
+const getInterestState = (item: {
+  flags: { angemeldet: boolean };
+  interest?: { requestedAt?: string | null; locked?: boolean | null };
+}): InterestRenderState => {
+  const isSigned = item.flags.angemeldet;
+  const isInterested = Boolean(item.interest?.requestedAt);
+  const isLocked = Boolean(item.flags.angemeldet && item.interest?.locked);
+  const badges = renderBadges(
+    [isSigned ? "Angemeldet" : "", !isSigned && isInterested ? "Waiting" : ""].filter(Boolean),
+  );
+  const interestButtonLabel = isSigned ? "Remove" : isInterested ? "Drop" : "Interested";
+  const interestAction = isSigned ? "remove" : isInterested ? "drop" : "add";
+  const interestButtonClass = isSigned ? "btn-danger" : isInterested ? "btn-muted" : "btn-success";
+  return {
+    isSigned,
+    isInterested,
+    isLocked,
+    badges,
+    interestButtonLabel,
+    interestAction,
+    interestButtonClass,
+  };
+};
+
+const renderInterestButton = (
+  type: "wohnungen" | "planungsprojekte",
+  id: string | null | undefined,
+  state: InterestRenderState,
+) => {
+  if (!id) return "";
+  return `<button class="btn ${state.interestButtonClass} js-interest-action" data-action="${state.interestAction}" data-type="${type}" data-id="${safeAttribute(id)}"${state.isLocked ? " disabled" : ""}>${state.interestButtonLabel}</button>`;
+};
+
+const renderLockButton = (
+  type: "wohnungen" | "planungsprojekte",
+  id: string | null | undefined,
+  state: InterestRenderState,
+) => {
+  if (!id || !state.isSigned) return "";
+  return `<button class="btn ${state.isLocked ? "btn-primary" : "btn-muted"} js-lock-action" data-action="${state.isLocked ? "unlock" : "lock"}" data-type="${type}" data-id="${safeAttribute(id)}">${state.isLocked ? "Locked" : "Lock"}</button>`;
+};
+
+const renderRankControls = (
+  type: "wohnungen" | "planungsprojekte",
+  id: string | null | undefined,
+  showRankControls: boolean,
+) => {
+  if (!showRankControls) return "";
+  return `
+        <div class="rank-controls">
+          <button class="btn btn-muted js-rank-move" data-direction="up" data-type="${type}" data-id="${safeAttribute(id ?? "")}" aria-label="Move up">&#x2191;</button>
+          <button class="btn btn-muted js-rank-move" data-direction="down" data-type="${type}" data-id="${safeAttribute(id ?? "")}" aria-label="Move down">&#x2193;</button>
+        </div>
+      `;
+};
+
+const renderRefreshLabel = (refreshAt: string | null) => {
+  if (!refreshAt) return "";
+  const refreshLeft = formatRefreshLeft(refreshAt);
+  if (!refreshLeft) return "";
+  return `<span class="title-meta refresh" data-refresh-at="${safeAttribute(refreshAt)}">refresh ${escapeHtml(refreshLeft)}</span>`;
+};
+
 const renderPlanungsprojektRow = (
   item: FlatfinderState["planungsprojekte"][number],
   options: RenderRowOptions = {},
@@ -150,24 +228,13 @@ const renderPlanungsprojektRow = (
          <img class="thumb" src="${safeAttribute(item.imageUrl)}" alt="" />
        </button>`
     : "";
-  const isSigned = item.flags.angemeldet;
+  const interestState = getInterestState(item);
+  const isSigned = interestState.isSigned;
   const isHidden = Boolean(item.hiddenAt);
   const isSeen = Boolean(item.seenAt);
-  const isInterested = Boolean(item.interest?.requestedAt);
-  const isLocked = Boolean(item.flags.angemeldet && item.interest?.locked);
-  const badges = renderBadges(
-    [isSigned ? "Angemeldet" : "", !isSigned && isInterested ? "Waiting" : ""].filter(Boolean),
-  );
-  const interestButtonLabel = isSigned ? "Remove" : isInterested ? "Drop" : "Interested";
-  const interestAction = isSigned ? "remove" : isInterested ? "drop" : "add";
-  const interestButtonClass = isSigned ? "btn-danger" : isInterested ? "btn-muted" : "btn-success";
-  const interestButton = item.id
-    ? `<button class="btn ${interestButtonClass} js-interest-action" data-action="${interestAction}" data-type="planungsprojekte" data-id="${safeAttribute(item.id)}"${isLocked ? " disabled" : ""}>${interestButtonLabel}</button>`
-    : "";
-  const lockButton =
-    item.id && isSigned
-      ? `<button class="btn ${isLocked ? "btn-primary" : "btn-muted"} js-lock-action" data-action="${isLocked ? "unlock" : "lock"}" data-type="planungsprojekte" data-id="${safeAttribute(item.id)}">${isLocked ? "Locked" : "Lock"}</button>`
-      : "";
+  const isLocked = interestState.isLocked;
+  const interestButton = renderInterestButton("planungsprojekte", item.id, interestState);
+  const lockButton = renderLockButton("planungsprojekte", item.id, interestState);
   const lageplan = item.detail?.lageplanUrl
     ? `<a class="btn" href="${safeAttribute(item.detail.lageplanUrl)}" target="_blank">Lageplan</a>`
     : "";
@@ -179,10 +246,7 @@ const renderPlanungsprojektRow = (
       ? `<span class="title-meta rank">#${item.interest.rank}</span>`
       : "";
   const refreshAt = showCountdown && !isSigned ? (item.interest?.watch?.nextCheckAt ?? null) : null;
-  const refreshLeft = refreshAt ? formatRefreshLeft(refreshAt) : null;
-  const refreshLabel = refreshLeft
-    ? `<span class="title-meta refresh" data-refresh-at="${safeAttribute(refreshAt)}">refresh ${escapeHtml(refreshLeft)}</span>`
-    : "";
+  const refreshLabel = renderRefreshLabel(refreshAt);
   const titleMetaParts = [
     ...(refreshLabel ? [refreshLabel] : []),
     `<span class="title-meta">${interestCount} signups${maxLabel}</span>`,
@@ -192,15 +256,10 @@ const renderPlanungsprojektRow = (
     titleMetaParts.length > 0
       ? `<span class="title-meta-group">· ${titleMetaParts.join(" · ")}</span>`
       : "";
-  const badgesBlock = badges ? `<span class="title-badges">${badges}</span>` : "";
-  const rankControls = showRankControls
-    ? `
-        <div class="rank-controls">
-          <button class="btn btn-muted js-rank-move" data-direction="up" data-type="planungsprojekte" data-id="${safeAttribute(item.id ?? "")}" aria-label="Move up">&#x2191;</button>
-          <button class="btn btn-muted js-rank-move" data-direction="down" data-type="planungsprojekte" data-id="${safeAttribute(item.id ?? "")}" aria-label="Move down">&#x2193;</button>
-        </div>
-      `
+  const badgesBlock = interestState.badges
+    ? `<span class="title-badges">${interestState.badges}</span>`
     : "";
+  const rankControls = renderRankControls("planungsprojekte", item.id, showRankControls);
   const interestActionBlock =
     interestButton || lockButton || rankControls
       ? `<div class="row-header-interest">${interestButton}${lockButton}${rankControls}</div>`
@@ -278,29 +337,18 @@ const renderWohnungRow = (item: WohnungRecord, options: RenderRowOptions = {}) =
 
   const timeLeft = formatTimeLeft(item.registrationEnd);
   const timeLabel = timeLeft ? `<span class="title-meta time">${timeLeft}</span>` : "";
-  const isSigned = item.flags.angemeldet;
+  const interestState = getInterestState(item);
+  const isSigned = interestState.isSigned;
   const isHidden = Boolean(item.hiddenAt);
   const isSeen = Boolean(item.seenAt);
-  const isInterested = Boolean(item.interest?.requestedAt);
-  const isLocked = Boolean(item.flags.angemeldet && item.interest?.locked);
-  const badges = renderBadges(
-    [isSigned ? "Angemeldet" : "", !isSigned && isInterested ? "Waiting" : ""].filter(Boolean),
-  );
+  const isLocked = interestState.isLocked;
   const visibilityLabel = renderVisibilityLabel(isHidden);
   const seenButton =
     !isSeen && item.id
       ? `<button class="seen-toggle js-entry-action" data-action="toggleSeen" data-type="wohnungen" data-id="${safeAttribute(item.id)}" aria-label="Mark seen">✓</button>`
       : "";
-  const interestButtonLabel = isSigned ? "Remove" : isInterested ? "Drop" : "Interested";
-  const interestAction = isSigned ? "remove" : isInterested ? "drop" : "add";
-  const interestButtonClass = isSigned ? "btn-danger" : isInterested ? "btn-muted" : "btn-success";
-  const interestButton = item.id
-    ? `<button class="btn ${interestButtonClass} js-interest-action" data-action="${interestAction}" data-type="wohnungen" data-id="${safeAttribute(item.id)}"${isLocked ? " disabled" : ""}>${interestButtonLabel}</button>`
-    : "";
-  const lockButton =
-    item.id && isSigned
-      ? `<button class="btn ${isLocked ? "btn-primary" : "btn-muted"} js-lock-action" data-action="${isLocked ? "unlock" : "lock"}" data-type="wohnungen" data-id="${safeAttribute(item.id)}">${isLocked ? "Locked" : "Lock"}</button>`
-      : "";
+  const interestButton = renderInterestButton("wohnungen", item.id, interestState);
+  const lockButton = renderLockButton("wohnungen", item.id, interestState);
   const entryActions = item.id
     ? `
         <button class="btn btn-muted js-entry-action" data-action="toggleHidden" data-type="wohnungen" data-id="${safeAttribute(item.id)}" aria-label="${isHidden ? "Unhide" : "Hide"}">${visibilityLabel}</button>
@@ -323,10 +371,7 @@ const renderWohnungRow = (item: WohnungRecord, options: RenderRowOptions = {}) =
       ? `<span class="title-meta rank">#${item.interest.rank}</span>`
       : "";
   const refreshAt = showCountdown && !isSigned ? (item.interest?.watch?.nextCheckAt ?? null) : null;
-  const refreshLeft = refreshAt ? formatRefreshLeft(refreshAt) : null;
-  const refreshLabel = refreshLeft
-    ? `<span class="title-meta refresh" data-refresh-at="${safeAttribute(refreshAt)}">refresh ${escapeHtml(refreshLeft)}</span>`
-    : "";
+  const refreshLabel = renderRefreshLabel(refreshAt);
   const titleMetaParts = [
     ...(timeLabel ? [timeLabel] : []),
     ...(refreshLabel ? [refreshLabel] : []),
@@ -337,15 +382,10 @@ const renderWohnungRow = (item: WohnungRecord, options: RenderRowOptions = {}) =
     titleMetaParts.length > 0
       ? `<span class="title-meta-group">· ${titleMetaParts.join(" · ")}</span>`
       : "";
-  const badgesBlock = badges ? `<span class="title-badges">${badges}</span>` : "";
-  const rankControls = showRankControls
-    ? `
-        <div class="rank-controls">
-          <button class="btn btn-muted js-rank-move" data-direction="up" data-type="wohnungen" data-id="${safeAttribute(item.id ?? "")}" aria-label="Move up">&#x2191;</button>
-          <button class="btn btn-muted js-rank-move" data-direction="down" data-type="wohnungen" data-id="${safeAttribute(item.id ?? "")}" aria-label="Move down">&#x2193;</button>
-        </div>
-      `
+  const badgesBlock = interestState.badges
+    ? `<span class="title-badges">${interestState.badges}</span>`
     : "";
+  const rankControls = renderRankControls("wohnungen", item.id, showRankControls);
   const interestActionBlock =
     interestButton || lockButton || rankControls
       ? `<div class="row-header-interest">${interestButton}${lockButton}${rankControls}</div>`
@@ -416,6 +456,68 @@ const renderHiddenSection = (items: string[], count: number) => {
   `;
 };
 
+const renderTelegramSettings = (config: TelegramConfig | null | undefined) => {
+  const enabled = config?.enabled ? "checked" : "";
+  const includeImages = config?.includeImages !== false ? "checked" : "";
+  const enableActions = config?.enableActions ? "checked" : "";
+  const pollingEnabled = config?.pollingEnabled ? "checked" : "";
+  const botToken = escapeHtml(config?.botToken ?? "");
+  const chatId = escapeHtml(config?.chatId ?? "");
+  const webhookToken = escapeHtml(config?.webhookToken ?? "");
+  return `
+    <div class="settings-card" id="telegram-settings">
+      <div class="settings-header">
+        <h2>Telegram notifications</h2>
+        <div class="settings-actions">
+          <button class="btn btn-muted" id="telegram-test">Send test</button>
+          <button class="btn btn-primary" id="telegram-save">Save</button>
+        </div>
+      </div>
+      <div class="settings-grid">
+        <label class="settings-field">
+          <span>Enabled</span>
+          <input type="checkbox" id="telegram-enabled" ${enabled} />
+        </label>
+        <label class="settings-field">
+          <span>Bot token</span>
+          <input type="password" id="telegram-bot-token" value="${botToken}" placeholder="123456:ABC-DEF..." />
+        </label>
+        <label class="settings-field">
+          <span>Chat ID</span>
+          <input type="text" id="telegram-chat-id" value="${chatId}" placeholder="e.g. 123456789" />
+        </label>
+        <label class="settings-field">
+          <span>Include images</span>
+          <input type="checkbox" id="telegram-include-images" ${includeImages} />
+        </label>
+        <label class="settings-field">
+          <span>Enable actions</span>
+          <input type="checkbox" id="telegram-enable-actions" ${enableActions} />
+        </label>
+        <label class="settings-field">
+          <span>Use polling (no webhook)</span>
+          <input type="checkbox" id="telegram-polling-enabled" ${pollingEnabled} />
+        </label>
+        <label class="settings-field">
+          <span>Webhook token</span>
+          <input type="text" id="telegram-webhook-token" value="${webhookToken}" placeholder="secret token" />
+        </label>
+      </div>
+      <div class="settings-hint">
+        Webhook URL: <code id="telegram-webhook-url">/api/telegram/webhook/{token}</code>
+      </div>
+      <div class="settings-status" id="telegram-status"></div>
+    </div>
+  `;
+};
+
+const renderSettingsSection = (config: TelegramConfig | null | undefined) => `
+  <div id="settings-section" class="section" data-view-group="settings">
+    <h2>Settings</h2>
+    ${renderTelegramSettings(config)}
+  </div>
+`;
+
 const renderSubsection = (title: string, type: string, listId: string, items: string[]) => {
   const content = items.length ? items.join("\n") : '<div class="empty">No entries</div>';
   return `
@@ -453,7 +555,7 @@ const sortByRank = <
     return b.lastSeenAt.localeCompare(a.lastSeenAt);
   });
 
-const buildSections = (state: FlatfinderState) => {
+const buildSections = (state: FlatfinderState, telegramConfig?: TelegramConfig | null) => {
   const isInterested = (item: {
     flags: { angemeldet: boolean };
     interest?: { requestedAt?: string | null };
@@ -526,6 +628,7 @@ const buildSections = (state: FlatfinderState) => {
   return {
     hiddenSection: renderHiddenSection(hiddenRows, hiddenCount),
     interestedSection,
+    settingsSection: renderSettingsSection(telegramConfig),
     wohnungenSection: renderSection(
       `Wohnungen (${wohnungenCount})`,
       wohnungen,
@@ -549,8 +652,9 @@ const buildSections = (state: FlatfinderState) => {
 export const renderFragments = (
   state: FlatfinderState,
   options: RenderOptions,
+  telegramConfig?: TelegramConfig | null,
 ): RenderFragments => {
-  const sections = buildSections(state);
+  const sections = buildSections(state, telegramConfig);
   return {
     updatedAt: state.updatedAt ?? null,
     lastScrapeAt: state.lastScrapeAt ?? null,
@@ -562,12 +666,17 @@ export const renderFragments = (
       interested: sections.interestedSection,
       wohnungen: sections.wohnungenSection,
       planungsprojekte: sections.planungsprojekteSection,
+      settings: sections.settingsSection,
     },
   };
 };
 
-export const renderPage = (state: FlatfinderState, options: RenderOptions) => {
-  const sections = buildSections(state);
+export const renderPage = (
+  state: FlatfinderState,
+  options: RenderOptions,
+  telegramConfig?: TelegramConfig | null,
+) => {
+  const sections = buildSections(state, telegramConfig);
 
   const updatedAt = state.updatedAt ?? "";
   const lastScrapeAt = state.lastScrapeAt ?? "";
@@ -585,7 +694,15 @@ export const renderPage = (state: FlatfinderState, options: RenderOptions) => {
       <body data-updated-at="${updatedAt}" data-last-scrape-at="${lastScrapeAt}" data-next-refresh="${options.nextRefreshAt}" data-view="root">
         <div class="header">
           <div class="header-row">
-            <h1>Flatfinder</h1>
+            <div class="header-title">
+              <h1>Flatfinder</h1>
+              <button class="btn btn-muted btn-icon js-view-toggle" data-view="settings" aria-label="Settings" title="Settings">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M12 8.5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 0 0 0-7z"></path>
+                  <path d="M19.4 12.9a7.9 7.9 0 0 0 .1-.9a7.9 7.9 0 0 0-.1-.9l2-1.5a.7.7 0 0 0 .2-.9l-1.9-3.3a.7.7 0 0 0-.9-.3l-2.3.9a7.7 7.7 0 0 0-1.6-.9l-.3-2.4a.7.7 0 0 0-.7-.6h-3.8a.7.7 0 0 0-.7.6l-.3 2.4a7.7 7.7 0 0 0-1.6.9l-2.3-.9a.7.7 0 0 0-.9.3L2.5 8.7a.7.7 0 0 0 .2.9l2 1.5a7.9 7.9 0 0 0-.1.9a7.9 7.9 0 0 0 .1.9l-2 1.5a.7.7 0 0 0-.2.9l1.9 3.3a.7.7 0 0 0 .9.3l2.3-.9a7.7 7.7 0 0 0 1.6.9l.3 2.4a.7.7 0 0 0 .7.6h3.8a.7.7 0 0 0 .7-.6l.3-2.4a7.7 7.7 0 0 0 1.6-.9l2.3.9a.7.7 0 0 0 .9-.3l1.9-3.3a.7.7 0 0 0-.2-.9l-2-1.5z"></path>
+                </svg>
+              </button>
+            </div>
             <div class="status-line">
               Last refresh: <span id="last-refresh" title="${lastScrapeAt || "-"}"></span>, next refresh: <span id="next-refresh"></span>, rate <span id="rate-count">${state.rateLimit.count}</span>/<span id="rate-limit">${rateLimitMonthly}</span>
             </div>
@@ -597,6 +714,8 @@ export const renderPage = (state: FlatfinderState, options: RenderOptions) => {
             <button class="btn btn-muted js-view-toggle" data-view="hidden">Hidden</button>
           </div>
         </div>
+
+        ${sections.settingsSection}
 
         ${sections.hiddenSection}
         ${sections.interestedSection}

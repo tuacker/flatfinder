@@ -79,6 +79,14 @@ const updateNextRefreshLabel = () => {
   label.textContent = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
 };
 
+const refreshDerivedUi = () => {
+  updateCountdowns();
+  updateRefreshCountdowns();
+  highlightNew();
+  updateRefreshLabel();
+  updateNextRefreshLabel();
+};
+
 const bindOnce = (element: HTMLElement, key: string, handler: (event: Event) => void) => {
   if (element.dataset[key] === "true") return;
   element.dataset[key] = "true";
@@ -109,7 +117,7 @@ const initMapToggles = () => {
   });
 };
 
-type ViewName = "root" | "hidden" | "interested";
+type ViewName = "root" | "hidden" | "interested" | "settings";
 let reorderActive = false;
 
 const syncReorderActive = () => {
@@ -122,6 +130,7 @@ const resolveView = (pathname: string): { view: ViewName; path: string } => {
   const trimmed = pathname.replace(/\/+$/, "") || "/";
   if (trimmed === "/hidden") return { view: "hidden", path: "/hidden" };
   if (trimmed === "/interested") return { view: "interested", path: "/interested" };
+  if (trimmed === "/settings") return { view: "settings", path: "/settings" };
   return { view: "root", path: "/" };
 };
 
@@ -783,6 +792,114 @@ const initLockActions = () => {
   });
 };
 
+const initTelegramSettings = () => {
+  const saveButton = document.getElementById("telegram-save") as HTMLButtonElement | null;
+  if (!saveButton) return;
+  const enabled = document.getElementById("telegram-enabled") as HTMLInputElement | null;
+  const botToken = document.getElementById("telegram-bot-token") as HTMLInputElement | null;
+  const chatId = document.getElementById("telegram-chat-id") as HTMLInputElement | null;
+  const includeImages = document.getElementById(
+    "telegram-include-images",
+  ) as HTMLInputElement | null;
+  const enableActions = document.getElementById(
+    "telegram-enable-actions",
+  ) as HTMLInputElement | null;
+  const pollingEnabled = document.getElementById(
+    "telegram-polling-enabled",
+  ) as HTMLInputElement | null;
+  const webhookToken = document.getElementById("telegram-webhook-token") as HTMLInputElement | null;
+  const testButton = document.getElementById("telegram-test") as HTMLButtonElement | null;
+  const webhookUrl = document.getElementById("telegram-webhook-url");
+  const status = document.getElementById("telegram-status");
+
+  const updateWebhookUrl = () => {
+    if (!webhookUrl) return;
+    const token = webhookToken?.value.trim();
+    webhookUrl.textContent = token
+      ? `${window.location.origin}/api/telegram/webhook/${token}`
+      : "/api/telegram/webhook/{token}";
+  };
+
+  updateWebhookUrl();
+  if (webhookToken) {
+    bindOnceEvent(webhookToken, "boundTelegramWebhook", "input", updateWebhookUrl);
+  }
+
+  const markDirty = () => {
+    settingsDirty = true;
+  };
+
+  [enabled, botToken, chatId, includeImages, enableActions, pollingEnabled, webhookToken]
+    .filter((input): input is HTMLInputElement => Boolean(input))
+    .forEach((input) => {
+      bindOnceEvent(input, "boundTelegramDirtyInput", "input", markDirty);
+      bindOnceEvent(input, "boundTelegramDirtyChange", "change", markDirty);
+    });
+
+  if (testButton) {
+    bindOnce(testButton, "boundTelegramTest", async (event) => {
+      event.preventDefault();
+      testButton.disabled = true;
+      if (status) status.textContent = "Sending test…";
+      try {
+        const response = await fetch("/api/telegram/test", { method: "POST" });
+        if (!response.ok) {
+          if (status) status.textContent = "Test failed.";
+          return;
+        }
+        if (status) status.textContent = "Test sent.";
+      } catch {
+        if (status) status.textContent = "Test failed.";
+      } finally {
+        testButton.disabled = false;
+      }
+    });
+  }
+
+  bindOnce(saveButton, "boundTelegramSave", async (event) => {
+    event.preventDefault();
+    saveButton.disabled = true;
+    if (status) status.textContent = "Saving…";
+    try {
+      const response = await fetch("/api/telegram/config", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          enabled: Boolean(enabled?.checked),
+          botToken: botToken?.value.trim(),
+          chatId: chatId?.value.trim(),
+          includeImages: Boolean(includeImages?.checked),
+          enableActions: Boolean(enableActions?.checked),
+          pollingEnabled: Boolean(pollingEnabled?.checked),
+          webhookToken: webhookToken?.value.trim(),
+        }),
+      });
+      if (!response.ok) {
+        if (status) status.textContent = "Save failed.";
+        return;
+      }
+      if (status) status.textContent = "Saved.";
+      settingsDirty = false;
+    } catch {
+      if (status) status.textContent = "Save failed.";
+    } finally {
+      saveButton.disabled = false;
+    }
+  });
+};
+
+const initInteractiveElements = () => {
+  initMapToggles();
+  initViewToggles();
+  initTelegramSettings();
+  initInterestActions();
+  initLockActions();
+  initRemoveHover();
+  initEntryActions();
+  initCarousel();
+  initRankActions();
+};
+
 const initEntryActions = () => {
   document.querySelectorAll<HTMLButtonElement>(".js-entry-action").forEach((button) => {
     bindOnce(button, "boundEntry", async (event) => {
@@ -959,10 +1076,12 @@ type FragmentPayload = {
     interested: string;
     wohnungen: string;
     planungsprojekte: string;
+    settings: string;
   };
 };
 
 let refreshPromise: Promise<void> | null = null;
+let settingsDirty = false;
 
 const replaceSection = (id: string, html: string) => {
   const current = document.getElementById(id);
@@ -988,21 +1107,13 @@ const applyFragments = (payload: FragmentPayload) => {
   replaceSection("interested-section", payload.sections.interested);
   replaceSection("wohnungen-section", payload.sections.wohnungen);
   replaceSection("planungsprojekte-section", payload.sections.planungsprojekte);
+  if (document.body.getAttribute("data-view") !== "settings" && !settingsDirty) {
+    replaceSection("settings-section", payload.sections.settings);
+  }
 
-  initMapToggles();
-  initViewToggles();
-  initInterestActions();
-  initLockActions();
-  initRemoveHover();
-  initEntryActions();
-  initCarousel();
-  initRankActions();
+  initInteractiveElements();
   syncPendingRemoveConfirms();
-  updateCountdowns();
-  updateRefreshCountdowns();
-  highlightNew();
-  updateRefreshLabel();
-  updateNextRefreshLabel();
+  refreshDerivedUi();
   updateSwapIndicators();
   syncReorderActive();
 };
@@ -1062,26 +1173,11 @@ const initEvents = () => {
 };
 
 const init = () => {
-  updateCountdowns();
-  updateRefreshCountdowns();
-  highlightNew();
-  updateRefreshLabel();
-  updateNextRefreshLabel();
+  refreshDerivedUi();
   setInterval(() => {
-    updateCountdowns();
-    updateRefreshCountdowns();
-    highlightNew();
-    updateRefreshLabel();
-    updateNextRefreshLabel();
+    refreshDerivedUi();
   }, 1000);
-  initMapToggles();
-  initViewToggles();
-  initInterestActions();
-  initLockActions();
-  initRemoveHover();
-  initEntryActions();
-  initCarousel();
-  initRankActions();
+  initInteractiveElements();
   initEvents();
   syncViewWithLocation(true);
   window.addEventListener("popstate", () => syncViewWithLocation(true));
