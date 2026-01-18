@@ -2,6 +2,7 @@ import {
   willhabenAreaIds,
   willhabenDetailBaseUrl,
   willhabenExcludedKeywords,
+  willhabenMaxTotalCost,
   willhabenMinArea,
   willhabenRecentPeriod,
   willhabenRoomBuckets,
@@ -68,6 +69,7 @@ const buildSearchUrl = (options: { page: number; recentOnly: boolean }) => {
   willhabenAreaIds.forEach((id) => params.append("areaId", id));
   willhabenRoomBuckets.forEach((bucket) => params.append("NO_OF_ROOMS_BUCKET", bucket));
   params.set("ESTATE_SIZE/LIVING_AREA_FROM", String(willhabenMinArea));
+  params.set("PRICE_TO", String(willhabenMaxTotalCost));
   params.set("rows", String(willhabenRowsPerPage));
   params.set("page", String(options.page));
   if (options.recentOnly) {
@@ -137,6 +139,46 @@ const extractCosts = (attrs: WillhabenAttribute[]) => {
     primaryLabel,
   };
 };
+
+const parseCurrencyValue = (value: string | null | undefined) => {
+  if (!value) return null;
+  const cleaned = value
+    .replace(/[^\d.,]/g, "")
+    .replace(/\./g, "")
+    .replace(",", ".");
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const pickTotalCostValue = (record: {
+  primaryCost?: string | null;
+  costs?: Record<string, string>;
+}) => {
+  const primary = parseCurrencyValue(record.primaryCost);
+  if (primary !== null) return primary;
+  const costs = record.costs ?? {};
+  const preferred = ["Gesamtmiete", "Gesamtbelastung", "Miete (brutto)", "Miete (netto)", "Preis"];
+  for (const label of preferred) {
+    const value = parseCurrencyValue(costs[label]);
+    if (value !== null) return value;
+  }
+  for (const [label, value] of Object.entries(costs)) {
+    if (!/miete|gesamt|preis/i.test(label)) continue;
+    const parsed = parseCurrencyValue(value);
+    if (parsed !== null) return parsed;
+  }
+  return null;
+};
+
+const isOverMaxCost = (record: { primaryCost?: string | null; costs?: Record<string, string> }) => {
+  const value = pickTotalCostValue(record);
+  return value !== null && value > willhabenMaxTotalCost;
+};
+
+const getTotalCostValue = (record: {
+  primaryCost?: string | null;
+  costs?: Record<string, string>;
+}) => pickTotalCostValue(record);
 
 const normalizeDescription = (value: string | null | undefined) => {
   if (!value) return null;
@@ -210,6 +252,9 @@ const parseSummary = (
     previous?.primaryCostLabel ??
     costsSummary.primaryLabel ??
     (costsSummary.primaryCost ? "Gesamtmiete" : null);
+  const totalCostValue =
+    previous?.totalCostValue ??
+    getTotalCostValue({ primaryCost: costsSummary.primaryCost, costs: costsSummary.costs });
 
   return {
     id,
@@ -227,6 +272,7 @@ const parseSummary = (
     costs: previous?.costs ?? costsSummary.costs,
     primaryCost: previous?.primaryCost ?? costsSummary.primaryCost,
     primaryCostLabel,
+    totalCostValue,
     firstSeenAt: previous?.firstSeenAt ?? now,
     lastSeenAt: now,
     seenAt: previous?.seenAt ?? null,
@@ -300,6 +346,10 @@ const applyDetail = (record: WillhabenRecord, detail: WillhabenDetail | null) =>
       record.primaryCostLabel = detail.costs["Gesamtmiete"] ? "Gesamtmiete" : "Gesamtbelastung";
     }
   }
+  record.totalCostValue = getTotalCostValue({
+    primaryCost: record.primaryCost,
+    costs: record.costs,
+  });
 };
 
 const buildRecords = async (
@@ -315,6 +365,7 @@ const buildRecords = async (
     const record = parseSummary(summary, existing, now);
     if (!record) continue;
     if (containsExcludedKeyword(record.title) || containsExcludedKeyword(record.location)) continue;
+    if (isOverMaxCost(record)) continue;
 
     recordsInOrder.push(record);
   }
@@ -339,6 +390,10 @@ const buildRecords = async (
           continue;
         }
         applyDetail(item, detail);
+        if (isOverMaxCost(item)) {
+          const index = merged.findIndex((entry) => entry.id === item.id);
+          if (index >= 0) merged.splice(index, 1);
+        }
       }
     });
     await Promise.all(workers);

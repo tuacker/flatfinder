@@ -100,7 +100,14 @@ const initMapToggles = () => {
 };
 
 type ViewName = "root" | "hidden" | "interested" | "settings";
+type SourceFilter = "all" | "wohnberatung" | "willhaben";
+type WillhabenSortKey = "price" | "area" | null;
+type WillhabenSortDir = "asc" | "desc" | null;
 let reorderActive = false;
+let willhabenSortKey: WillhabenSortKey = null;
+let willhabenSortDir: WillhabenSortDir = null;
+const willhabenDistricts = new Set<string>();
+const willhabenRooms = new Set<string>();
 
 const syncReorderActive = () => {
   reorderActive = Array.from(document.querySelectorAll<HTMLElement>(".list[data-rank-mode]")).some(
@@ -124,10 +131,12 @@ const setView = (view: ViewName, options: { replace?: boolean } = {}) => {
   clearSwapHighlights();
   const targetPath = view === "root" ? "/" : `/${view}`;
   if (window.location.pathname === targetPath) return;
+  const url = new URL(window.location.href);
+  url.pathname = targetPath;
   if (options.replace) {
-    window.history.replaceState({ view }, "", targetPath);
+    window.history.replaceState({ view }, "", url.toString());
   } else {
-    window.history.pushState({ view }, "", targetPath);
+    window.history.pushState({ view }, "", url.toString());
   }
 };
 
@@ -145,6 +154,48 @@ const initViewToggles = () => {
 const syncViewWithLocation = (replace: boolean) => {
   const resolved = resolveView(window.location.pathname);
   setView(resolved.view, { replace });
+};
+
+const resolveSourceFilter = (search: string): SourceFilter => {
+  const params = new URLSearchParams(search);
+  const source = params.get("source");
+  if (source === "wohnberatung" || source === "willhaben") return source;
+  return "all";
+};
+
+const setSourceFilter = (source: SourceFilter, options: { replace?: boolean } = {}) => {
+  document.body.setAttribute("data-source", source);
+  document.querySelectorAll<HTMLButtonElement>(".js-source-toggle").forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.source === source);
+  });
+  updateHiddenCount();
+  const url = new URL(window.location.href);
+  if (source === "all") {
+    url.searchParams.delete("source");
+  } else {
+    url.searchParams.set("source", source);
+  }
+  if (options.replace) {
+    window.history.replaceState({ source }, "", url.toString());
+  } else {
+    window.history.pushState({ source }, "", url.toString());
+  }
+};
+
+const initSourceFilters = () => {
+  document.querySelectorAll<HTMLButtonElement>(".js-source-toggle").forEach((button) => {
+    bindOnce(button, "boundSource", (event) => {
+      event.preventDefault();
+      const source = button.dataset.source as SourceFilter | undefined;
+      if (!source) return;
+      setSourceFilter(source);
+    });
+  });
+};
+
+const syncSourceWithLocation = (replace: boolean) => {
+  const source = resolveSourceFilter(window.location.search);
+  setSourceFilter(source, { replace });
 };
 
 let suppressReloadUntil = 0;
@@ -198,10 +249,146 @@ const placeSeenOrder = (row: HTMLElement, list: HTMLElement) => {
   moveRowWithMap(row, list, firstSeen);
 };
 
+const matchesSourceFilter = (row: HTMLElement, filter: SourceFilter) => {
+  if (filter === "all") return true;
+  const type = row.getAttribute("data-type");
+  const isWillhaben = type === "willhaben";
+  return filter === "willhaben" ? isWillhaben : !isWillhaben;
+};
+
 const updateHiddenCount = () => {
-  const count = document.querySelectorAll("#hidden-list > .row").length;
+  const filter = (document.body.getAttribute("data-source") ?? "all") as SourceFilter;
+  const count = Array.from(document.querySelectorAll<HTMLElement>("#hidden-list > .row")).filter(
+    (row) => matchesSourceFilter(row, filter),
+  ).length;
   const label = document.getElementById("hidden-count");
   if (label) label.textContent = String(count);
+};
+
+const getNumericData = (row: HTMLElement, key: string) => {
+  const raw = row.getAttribute(`data-${key}`);
+  if (!raw) return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const applyWillhabenFilters = () => {
+  const list = document.getElementById("willhaben-list");
+  if (!list) return;
+  const controls = document.getElementById("willhaben-controls");
+  const rows = Array.from(list.querySelectorAll<HTMLElement>(".row[data-type='willhaben']"));
+  if (controls) {
+    controls.querySelectorAll<HTMLButtonElement>(".js-sort-chip").forEach((button) => {
+      const key = button.dataset.sort as WillhabenSortKey | undefined;
+      if (!key) return;
+      const active = key === willhabenSortKey && willhabenSortDir !== null;
+      button.classList.toggle("is-active", active);
+      button.dataset.sortState = active ? (willhabenSortDir ?? "none") : "none";
+    });
+    controls.querySelectorAll<HTMLButtonElement>(".js-filter-district").forEach((button) => {
+      const value = button.dataset.value ?? "";
+      const active =
+        value === "all" ? willhabenDistricts.size === 0 : willhabenDistricts.has(value);
+      button.classList.toggle("is-active", active);
+    });
+    controls.querySelectorAll<HTMLButtonElement>(".js-filter-rooms").forEach((button) => {
+      const value = button.dataset.value ?? "";
+      const active = value === "all" ? willhabenRooms.size === 0 : willhabenRooms.has(value);
+      button.classList.toggle("is-active", active);
+    });
+  }
+
+  rows.forEach((row, index) => {
+    if (!row.dataset.order) row.dataset.order = String(index);
+  });
+
+  rows.forEach((row) => {
+    const district = row.getAttribute("data-district") ?? "";
+    const roomsValue = row.getAttribute("data-rooms") ?? "";
+    const roomsCount = Number(roomsValue);
+    let visible = true;
+    if (willhabenDistricts.size > 0 && !willhabenDistricts.has(district)) {
+      visible = false;
+    }
+    if (visible && willhabenRooms.size > 0) {
+      if (!Number.isFinite(roomsCount)) {
+        visible = false;
+      } else {
+        visible = Array.from(willhabenRooms).some((value) => {
+          if (value === "4+") return roomsCount >= 4;
+          return roomsValue === value;
+        });
+      }
+    }
+    row.style.display = visible ? "" : "none";
+    const mapSection = getMapSection(row);
+    if (mapSection) mapSection.style.display = visible ? "" : "none";
+  });
+
+  const sorters: Record<string, (a: HTMLElement, b: HTMLElement) => number> = {
+    price: (a, b) =>
+      (getNumericData(a, "price") ?? Infinity) - (getNumericData(b, "price") ?? Infinity),
+    area: (a, b) =>
+      (getNumericData(a, "area") ?? Infinity) - (getNumericData(b, "area") ?? Infinity),
+  };
+  const baseSorter =
+    willhabenSortKey && sorters[willhabenSortKey]
+      ? sorters[willhabenSortKey]
+      : (a: HTMLElement, b: HTMLElement) =>
+          Number(a.dataset.order ?? 0) - Number(b.dataset.order ?? 0);
+  const sorter =
+    willhabenSortDir === "desc" ? (a: HTMLElement, b: HTMLElement) => baseSorter(b, a) : baseSorter;
+  const sorted = [...rows].sort(sorter);
+  for (const row of sorted) {
+    moveRowWithMap(row, list, null);
+  }
+};
+
+const initWillhabenFilters = () => {
+  const controls = document.getElementById("willhaben-controls");
+  if (!controls) return;
+  controls.querySelectorAll<HTMLButtonElement>(".js-sort-chip").forEach((button) => {
+    bindOnce(button, "boundSort", () => {
+      const key = button.dataset.sort as WillhabenSortKey | undefined;
+      if (!key) return;
+      if (willhabenSortKey !== key) {
+        willhabenSortKey = key;
+        willhabenSortDir = "asc";
+      } else if (willhabenSortDir === "asc") {
+        willhabenSortDir = "desc";
+      } else {
+        willhabenSortKey = null;
+        willhabenSortDir = null;
+      }
+      applyWillhabenFilters();
+    });
+  });
+  controls.querySelectorAll<HTMLButtonElement>(".js-filter-district").forEach((button) => {
+    bindOnce(button, "boundDistrict", () => {
+      const value = button.dataset.value ?? "";
+      if (value === "all") {
+        willhabenDistricts.clear();
+      } else if (willhabenDistricts.has(value)) {
+        willhabenDistricts.delete(value);
+      } else {
+        willhabenDistricts.add(value);
+      }
+      applyWillhabenFilters();
+    });
+  });
+  controls.querySelectorAll<HTMLButtonElement>(".js-filter-rooms").forEach((button) => {
+    bindOnce(button, "boundRooms", () => {
+      const value = button.dataset.value ?? "";
+      if (value === "all") {
+        willhabenRooms.clear();
+      } else if (willhabenRooms.has(value)) {
+        willhabenRooms.delete(value);
+      } else {
+        willhabenRooms.add(value);
+      }
+      applyWillhabenFilters();
+    });
+  });
 };
 
 const signupLimit = 3;
@@ -878,6 +1065,7 @@ const initTelegramSettings = () => {
 const initInteractiveElements = () => {
   initMapToggles();
   initViewToggles();
+  initSourceFilters();
   initTelegramSettings();
   initInterestActions();
   initLockActions();
@@ -885,6 +1073,8 @@ const initInteractiveElements = () => {
   initEntryActions();
   initCarousel();
   initRankActions();
+  initWillhabenFilters();
+  applyWillhabenFilters();
 };
 
 const initEntryActions = () => {
@@ -1058,6 +1248,10 @@ type FragmentPayload = {
   nextRefreshAt: number;
   rateLimitCount: number;
   rateLimitMonthly: number;
+  willhaben?: {
+    districts: string[];
+    rooms: string[];
+  };
   sections: {
     hidden: string;
     interested: string;
@@ -1102,6 +1296,9 @@ const applyFragments = (payload: FragmentPayload) => {
 
   initInteractiveElements();
   syncPendingRemoveConfirms();
+  updateHiddenCount();
+  initWillhabenFilters();
+  applyWillhabenFilters();
   refreshDerivedUi();
   updateSwapIndicators();
   syncReorderActive();
@@ -1169,7 +1366,11 @@ const init = () => {
   initInteractiveElements();
   initEvents();
   syncViewWithLocation(true);
-  window.addEventListener("popstate", () => syncViewWithLocation(true));
+  syncSourceWithLocation(true);
+  window.addEventListener("popstate", () => {
+    syncViewWithLocation(true);
+    syncSourceWithLocation(true);
+  });
   updateSwapIndicators();
 };
 

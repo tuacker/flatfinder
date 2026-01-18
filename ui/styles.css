@@ -24,6 +24,23 @@ h1 {
   align-items: center;
   gap: 10px;
 }
+.header-sources {
+  display: inline-flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.header-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.btn.btn-icon.btn-icon-sm {
+  padding: 4px;
+}
+.btn.btn-icon.btn-icon-sm svg {
+  width: 16px;
+  height: 16px;
+}
 .btn.btn-icon {
   padding: 6px;
   border-radius: 999px;
@@ -101,10 +118,29 @@ h1 {
   display: flex;
   gap: 8px;
 }
-.status-actions .btn.is-active {
+.status-actions .btn.is-active,
+.header-sources .btn.is-active {
   background: #2563eb;
   border-color: #2563eb;
   color: #fff;
+}
+
+body[data-source="wohnberatung"] #willhaben-section {
+  display: none;
+}
+
+body[data-source="willhaben"] #wohnungen-section,
+body[data-source="willhaben"] #planungsprojekte-section {
+  display: none;
+}
+
+body[data-source="wohnberatung"] #hidden-list > .row[data-type="willhaben"] {
+  display: none;
+}
+
+body[data-source="willhaben"] #hidden-list > .row[data-type="wohnungen"],
+body[data-source="willhaben"] #hidden-list > .row[data-type="planungsprojekte"] {
+  display: none;
 }
 .section {
   margin-top: 32px;
@@ -269,6 +305,13 @@ h1 {
   gap: 6px;
   align-items: baseline;
   white-space: nowrap;
+}
+.row[data-type="willhaben"] .fact {
+  white-space: normal;
+  align-items: flex-start;
+}
+.row[data-type="willhaben"] .fact .value {
+  overflow-wrap: anywhere;
 }
 .fact .label {
   font-weight: 500;
@@ -587,4 +630,47 @@ a {
   .map-container {
     margin-left: 0;
   }
+}
+.willhaben-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.filter-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+.filter-label {
+  color: #64748b;
+  font-weight: 600;
+}
+.filter-chip {
+  border: 1px solid #dbe2ef;
+  background: #fff;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 13px;
+  color: #0f172a;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+.filter-chip.is-active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+.filter-chip[data-sort-state="asc"]::after {
+  content: " ↑";
+}
+.filter-chip[data-sort-state="desc"]::after {
+  content: " ↓";
+}
+.secondary-facts {
+  margin-top: 4px;
 }

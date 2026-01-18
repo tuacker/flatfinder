@@ -72,6 +72,7 @@ const fetchWohnberatungHtml = async (url: string, cookieHeader: string) => {
 };
 
 const nowIso = () => new Date().toISOString();
+type SourceFilter = "all" | "wohnberatung" | "willhaben";
 
 const signupLimit = 3;
 const interestRefreshIntervalMs = 15_000;
@@ -318,6 +319,11 @@ const getNextRefreshAt = () => {
 };
 
 const getNextRefreshAtWithFallback = () => getNextRefreshAt() || getNextRefreshFallback();
+
+const getSourceFilter = (value: unknown): SourceFilter => {
+  if (value === "wohnberatung" || value === "willhaben") return value;
+  return "all";
+};
 
 let scheduleInterestRefresh: () => void = () => {};
 
@@ -853,7 +859,9 @@ const main = async () => {
         ? state.wohnungen
         : type === "planungsprojekte"
           ? state.planungsprojekte
-          : null;
+          : type === "willhaben"
+            ? state.willhaben
+            : null;
 
     if (!collection) {
       res.status(400).json({ error: "Unknown item type." });
@@ -1082,12 +1090,26 @@ const main = async () => {
     ),
   );
   app.get("/api/state", (_, res) => res.json(state));
-  app.get(["/hidden", "/interested", "/settings"], (_, res) =>
-    res.send(renderPage(state, { nextRefreshAt: getNextRefreshAtWithFallback() }, telegramConfig)),
-  );
-  app.get("/", (_, res) =>
-    res.send(renderPage(state, { nextRefreshAt: getNextRefreshAtWithFallback() }, telegramConfig)),
-  );
+  app.get(["/hidden", "/interested", "/settings"], (req, res) => {
+    const sourceFilter = getSourceFilter(req.query.source);
+    res.send(
+      renderPage(
+        state,
+        { nextRefreshAt: getNextRefreshAtWithFallback(), sourceFilter },
+        telegramConfig,
+      ),
+    );
+  });
+  app.get("/", (req, res) => {
+    const sourceFilter = getSourceFilter(req.query.source);
+    res.send(
+      renderPage(
+        state,
+        { nextRefreshAt: getNextRefreshAtWithFallback(), sourceFilter },
+        telegramConfig,
+      ),
+    );
+  });
 
   app.listen(port, () => {
     console.log(`Flatfinder server running on http://localhost:${port}`);

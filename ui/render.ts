@@ -15,6 +15,7 @@ import { formatRefreshLeft, formatTimeLeft } from "./time.js";
 
 export type RenderOptions = {
   nextRefreshAt: number;
+  sourceFilter?: SourceFilter;
 };
 
 export type RenderFragments = {
@@ -31,7 +32,13 @@ export type RenderFragments = {
     willhaben: string;
     settings: string;
   };
+  willhaben: {
+    districts: string[];
+    rooms: string[];
+  };
 };
+
+type SourceFilter = "all" | "wohnberatung" | "willhaben";
 
 const escapeHtml = (value: string | number | null | undefined) =>
   String(value ?? "")
@@ -49,6 +56,37 @@ const safeAttribute = (value: string | number | null | undefined) => escapeHtml(
 const cleanValue = (value: string | null) => {
   if (!value) return "-";
   return value.replace(/^[^0-9€]+:?\s*/i, "").trim();
+};
+
+const parseCurrency = (value: string | null | undefined) => {
+  if (!value) return null;
+  const cleaned = value
+    .replace(/[^\d.,]/g, "")
+    .replace(/\./g, "")
+    .replace(",", ".");
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const parseNumeric = (value: string | null | undefined) => {
+  if (!value) return null;
+  const cleaned = value.replace(/[^\d.,]/g, "").replace(",", ".");
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const extractDistrictCode = (value: string | null | undefined) => {
+  if (!value) return null;
+  const match = value.match(/\b(0?[1-9]|1[0-9])\.?\s*Bezirk/i);
+  if (match) return match[1].padStart(2, "0");
+  return null;
+};
+
+const formatCurrency = (value: string | number | null | undefined) => {
+  if (value === null || value === undefined) return null;
+  const numeric = typeof value === "number" ? value : parseCurrency(value);
+  if (numeric === null) return null;
+  return new Intl.NumberFormat("de-AT", { style: "currency", currency: "EUR" }).format(numeric);
 };
 
 const buildMapEmbedUrl = (mapUrl: string | null) => {
@@ -393,23 +431,25 @@ const renderWillhabenRow = (item: WillhabenRecord) => {
 
   const images = item.images?.length ? item.images : item.thumbnailUrl ? [item.thumbnailUrl] : [];
   const imageData = encodeImages(images);
-  const thumbSrc = item.thumbnailUrl ?? images[0] ?? null;
+  const thumbSrc = images[0] ?? null;
   const thumb = thumbSrc
     ? `<button class="image-button js-carousel" data-images="${imageData}">
          <img class="thumb" src="${safeAttribute(thumbSrc)}" alt="" />
        </button>`
     : "";
 
-  const title = safeValue(item.location ?? item.title ?? null);
-  const secondary =
-    item.title && item.location && item.title !== item.location
-      ? `<div class="meta">${escapeHtml(item.title)}</div>`
-      : item.title && !item.location
-        ? `<div class="meta">${escapeHtml(item.title)}</div>`
-        : "";
+  const titleText = item.title ?? item.location ?? null;
+  const subtitleText =
+    item.title && item.location && item.title !== item.location ? item.location : null;
+  const secondary = subtitleText ? `<div class="meta">${escapeHtml(subtitleText)}</div>` : "";
 
   const isHidden = Boolean(item.hiddenAt);
   const isSeen = Boolean(item.seenAt);
+  const districtCode =
+    extractDistrictCode(item.district ?? null) ?? extractDistrictCode(item.location ?? null) ?? "";
+  const roomsValue = parseNumeric(item.rooms)?.toString() ?? "";
+  const areaValue = parseNumeric(item.size)?.toString() ?? "";
+  const priceValue = item.totalCostValue ?? parseCurrency(item.primaryCost);
   const visibilityLabel = renderVisibilityLabel(isHidden);
   const seenButton = !isSeen
     ? `<button class="seen-toggle js-entry-action" data-action="toggleSeen" data-type="willhaben" data-id="${safeAttribute(item.id)}" aria-label="Mark seen">✓</button>`
@@ -419,20 +459,46 @@ const renderWillhabenRow = (item: WillhabenRecord) => {
       `;
 
   const primaryLabel = item.primaryCostLabel ?? (item.primaryCost ? "Gesamtmiete" : null);
-  const costEntries = Object.entries(item.costs ?? {}).filter(
-    ([label]) => !primaryLabel || label !== primaryLabel,
-  );
-  const costFacts = [
-    ...(item.primaryCost
-      ? [
-          `<div class="fact"><span class="label">${escapeHtml(primaryLabel ?? "Gesamtmiete")}:</span><span class="value">${safeValue(item.primaryCost)}</span></div>`,
-        ]
-      : []),
-    ...costEntries.map(
-      ([label, value]) =>
-        `<div class="fact"><span class="label">${escapeHtml(label)}:</span><span class="value">${safeValue(value)}</span></div>`,
-    ),
+  const totalCost =
+    formatCurrency(item.totalCostValue ?? item.primaryCost) ??
+    (item.primaryCost ? `€ ${safeValue(item.primaryCost)}` : null);
+  const totalLabel = "Gesamtbelastung";
+  const additionalCostLabels = [
+    "Betriebskosten",
+    "Betriebskosten (brutto)",
+    "Betriebskosten (netto)",
+    "BK",
+    "Additional Cost Fee",
   ];
+  const additionalCostEntry =
+    additionalCostLabels
+      .map((label) => ({ label, value: item.costs?.[label] }))
+      .find((entry) => entry.value)?.value ?? null;
+  const additionalCost =
+    formatCurrency(additionalCostEntry) ??
+    (additionalCostEntry ? `€ ${safeValue(additionalCostEntry)}` : null);
+  const summaryFacts = [
+    item.size
+      ? `<div class="fact"><span class="label">Fläche:</span><span class="value">${safeValue(item.size)} m²</span></div>`
+      : "",
+    item.rooms
+      ? `<div class="fact"><span class="label">Zimmer:</span><span class="value">${safeValue(item.rooms)}</span></div>`
+      : "",
+    totalCost
+      ? `<div class="fact"><span class="label">${escapeHtml(totalLabel)}:</span><span class="value">${escapeHtml(totalCost)}</span></div>`
+      : "",
+    additionalCost
+      ? `<div class="fact"><span class="label">BK:</span><span class="value">${escapeHtml(additionalCost)}</span></div>`
+      : "",
+  ].filter(Boolean);
+
+  const costEntries = Object.entries(item.costs ?? {}).filter(
+    ([label]) => (!primaryLabel || label !== primaryLabel) && label !== totalLabel,
+  );
+  const otherFacts = costEntries.map(
+    ([label, value]) =>
+      `<div class="fact"><span class="label">${escapeHtml(label)}:</span><span class="value">${safeValue(value)}</span></div>`,
+  );
 
   const detailsToggle =
     mapEmbed || item.detail?.description
@@ -455,13 +521,13 @@ const renderWillhabenRow = (item: WillhabenRecord) => {
   if (!isSeen) rowClasses.push("is-new");
 
   return `
-    <div class="${rowClasses.join(" ")}" data-type="willhaben" data-id="${safeAttribute(item.id)}" data-first-seen="${item.firstSeenAt}" data-seen-at="${safeAttribute(item.seenAt ?? "")}" data-hidden-at="${safeAttribute(item.hiddenAt ?? "")}">
+    <div class="${rowClasses.join(" ")}" data-type="willhaben" data-id="${safeAttribute(item.id)}" data-first-seen="${item.firstSeenAt}" data-seen-at="${safeAttribute(item.seenAt ?? "")}" data-hidden-at="${safeAttribute(item.hiddenAt ?? "")}" data-district="${safeAttribute(districtCode)}" data-rooms="${safeAttribute(roomsValue)}" data-area="${safeAttribute(areaValue)}" data-price="${safeAttribute(priceValue ?? "")}">
       ${seenButton}
       ${thumb}
       <div class="content">
         <div class="row-header">
           <div class="title-line">
-            <div class="title">${title}</div>
+            <div class="title">${safeValue(titleText)}</div>
           </div>
           <div class="row-header-actions">
             <div class="actions">
@@ -473,10 +539,9 @@ const renderWillhabenRow = (item: WillhabenRecord) => {
         </div>
         ${secondary}
         <div class="facts">
-          ${item.size ? `<div class="fact"><span class="label">Fläche:</span><span class="value">${safeValue(item.size)}</span></div>` : ""}
-          ${item.rooms ? `<div class="fact"><span class="label">Zimmer:</span><span class="value">${safeValue(item.rooms)}</span></div>` : ""}
-          ${costFacts.join("")}
+          ${summaryFacts.join("")}
         </div>
+        ${otherFacts.length ? `<div class="facts secondary-facts">${otherFacts.join("")}</div>` : ""}
       </div>
     </div>
     ${mapSection}
@@ -564,6 +629,36 @@ const renderTelegramSettings = (config: TelegramConfig | null | undefined) => {
   `;
 };
 
+const renderWillhabenControls = (options: { districts: string[] }) => `
+  <div class="willhaben-controls" id="willhaben-controls">
+    <div class="filter-group">
+      <span class="filter-label">Sort</span>
+      <button class="filter-chip js-sort-chip" data-sort="price" data-sort-state="none">Price</button>
+      <button class="filter-chip js-sort-chip" data-sort="area" data-sort-state="none">Fläche</button>
+    </div>
+    <div class="filter-group">
+      <span class="filter-label">District</span>
+      <button class="filter-chip js-filter-district" data-value="all">All</button>
+      ${options.districts
+        .map(
+          (district) =>
+            `<button class="filter-chip js-filter-district" data-value="${escapeHtml(
+              district,
+            )}">${escapeHtml(district)}.</button>`,
+        )
+        .join("")}
+    </div>
+    <div class="filter-group">
+      <span class="filter-label">Rooms</span>
+      <button class="filter-chip js-filter-rooms" data-value="all">All</button>
+      <button class="filter-chip js-filter-rooms" data-value="1">1</button>
+      <button class="filter-chip js-filter-rooms" data-value="2">2</button>
+      <button class="filter-chip js-filter-rooms" data-value="3">3</button>
+      <button class="filter-chip js-filter-rooms" data-value="4+">4+</button>
+    </div>
+  </div>
+`;
+
 const renderSettingsSection = (config: TelegramConfig | null | undefined) => `
   <div id="settings-section" class="section" data-view-group="settings">
     <h2>Settings</h2>
@@ -571,7 +666,13 @@ const renderSettingsSection = (config: TelegramConfig | null | undefined) => `
   </div>
 `;
 
-const renderSubsection = (title: string, type: string, listId: string, items: string[]) => {
+const renderSubsection = (
+  title: string,
+  type: string,
+  listId: string,
+  items: string[],
+  options?: { controls?: string },
+) => {
   const content = items.length ? items.join("\n") : '<div class="empty">No entries</div>';
   return `
     <div class="subsection">
@@ -583,6 +684,7 @@ const renderSubsection = (title: string, type: string, listId: string, items: st
           <button class="btn btn-muted js-rank-cancel is-hidden" data-type="${type}" data-target="${listId}">Cancel</button>
         </div>
       </div>
+      ${options?.controls ?? ""}
       <div class="list" id="${listId}" data-rank-mode="false">${content}</div>
     </div>
   `;
@@ -636,6 +738,18 @@ const buildSections = (state: FlatfinderState, telegramConfig?: TelegramConfig |
     renderPlanungsprojektRow(item, { showCountdown: true }),
   );
   const willhaben = sortSeenLast(visibleWillhaben).map((item) => renderWillhabenRow(item));
+  const willhabenDistricts = Array.from(
+    new Set(
+      state.willhaben
+        .map(
+          (item) =>
+            extractDistrictCode(item.district ?? null) ??
+            extractDistrictCode(item.location ?? null) ??
+            null,
+        )
+        .filter((value): value is string => Boolean(value && value.trim())),
+    ),
+  ).sort((a, b) => Number(a) - Number(b));
 
   const interestedWohnungenRows = sortByRank(interestedWohnungen).map((item) =>
     renderWohnungRow(item, { showRankControls: true, showRankLabel: true, showCountdown: true }),
@@ -686,6 +800,10 @@ const buildSections = (state: FlatfinderState, telegramConfig?: TelegramConfig |
     </div>
   `;
 
+  const willhabenControls = renderWillhabenControls({
+    districts: willhabenDistricts,
+  });
+
   return {
     hiddenSection: renderHiddenSection(hiddenRows, hiddenCount),
     interestedSection,
@@ -706,7 +824,7 @@ const buildSections = (state: FlatfinderState, telegramConfig?: TelegramConfig |
     ),
     willhabenSection: renderSection(
       `Willhaben (${willhabenCount})`,
-      willhaben,
+      [willhabenControls, ...willhaben],
       "willhaben-list",
       "willhaben-section",
       "root",
@@ -738,6 +856,21 @@ export const renderFragments = (
       willhaben: sections.willhabenSection,
       settings: sections.settingsSection,
     },
+    willhaben: {
+      districts: Array.from(
+        new Set(
+          state.willhaben
+            .map(
+              (item) =>
+                extractDistrictCode(item.district ?? null) ??
+                extractDistrictCode(item.location ?? null) ??
+                null,
+            )
+            .filter((value): value is string => Boolean(value && value.trim())),
+        ),
+      ).sort((a, b) => Number(a) - Number(b)),
+      rooms: [],
+    },
   };
 };
 
@@ -746,6 +879,7 @@ export const renderPage = (
   options: RenderOptions,
   telegramConfig?: TelegramConfig | null,
 ) => {
+  const sourceFilter: SourceFilter = options.sourceFilter ?? "all";
   const sections = buildSections(state, telegramConfig);
 
   const updatedAt = state.updatedAt ?? "";
@@ -761,20 +895,27 @@ export const renderPage = (
         <link rel="stylesheet" href="/app.css" />
         <script src="/app.js" type="module" defer></script>
       </head>
-      <body data-updated-at="${updatedAt}" data-last-scrape-at="${lastScrapeAt}" data-next-refresh="${options.nextRefreshAt}" data-view="root">
+      <body data-updated-at="${updatedAt}" data-last-scrape-at="${lastScrapeAt}" data-next-refresh="${options.nextRefreshAt}" data-view="root" data-source="${sourceFilter}">
         <div class="header">
-          <div class="header-row">
+        <div class="header-row">
             <div class="header-title">
               <h1>Flatfinder</h1>
-              <button class="btn btn-muted btn-icon js-view-toggle" data-view="settings" aria-label="Settings" title="Settings">
+              <div class="header-sources">
+                <button class="btn btn-muted js-source-toggle${sourceFilter === "all" ? " is-active" : ""}" data-source="all">All</button>
+                <button class="btn btn-muted js-source-toggle${sourceFilter === "wohnberatung" ? " is-active" : ""}" data-source="wohnberatung">Wiener Wohnen</button>
+                <button class="btn btn-muted js-source-toggle${sourceFilter === "willhaben" ? " is-active" : ""}" data-source="willhaben">Willhaben</button>
+              </div>
+            </div>
+            <div class="header-status">
+              <button class="btn btn-muted btn-icon btn-icon-sm js-view-toggle" data-view="settings" aria-label="Settings" title="Settings">
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                   <path d="M12 8.5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 0 0 0-7z"></path>
                   <path d="M19.4 12.9a7.9 7.9 0 0 0 .1-.9a7.9 7.9 0 0 0-.1-.9l2-1.5a.7.7 0 0 0 .2-.9l-1.9-3.3a.7.7 0 0 0-.9-.3l-2.3.9a7.7 7.7 0 0 0-1.6-.9l-.3-2.4a.7.7 0 0 0-.7-.6h-3.8a.7.7 0 0 0-.7.6l-.3 2.4a7.7 7.7 0 0 0-1.6.9l-2.3-.9a.7.7 0 0 0-.9.3L2.5 8.7a.7.7 0 0 0 .2.9l2 1.5a7.9 7.9 0 0 0-.1.9a7.9 7.9 0 0 0 .1.9l-2 1.5a.7.7 0 0 0-.2.9l1.9 3.3a.7.7 0 0 0 .9.3l2.3-.9a7.7 7.7 0 0 0 1.6.9l.3 2.4a.7.7 0 0 0 .7.6h3.8a.7.7 0 0 0 .7-.6l.3-2.4a7.7 7.7 0 0 0 1.6-.9l2.3.9a.7.7 0 0 0 .9-.3l1.9-3.3a.7.7 0 0 0-.2-.9l-2-1.5z"></path>
                 </svg>
               </button>
-            </div>
-            <div class="status-line">
-              Last refresh: <span id="last-refresh" title="${lastScrapeAt || "-"}"></span>, next refresh: <span id="next-refresh"></span>, rate <span id="rate-count">${state.rateLimit.count}</span>/<span id="rate-limit">${rateLimitMonthly}</span>
+              <div class="status-line">
+                Last refresh: <span id="last-refresh" title="${lastScrapeAt || "-"}"></span>, next refresh: <span id="next-refresh"></span>, rate <span id="rate-count">${state.rateLimit.count}</span>/<span id="rate-limit">${rateLimitMonthly}</span>
+              </div>
             </div>
           </div>
           <div class="header-divider"></div>

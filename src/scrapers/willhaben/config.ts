@@ -16,6 +16,7 @@ export const willhabenAreaIds = [
 
 export const willhabenRoomBuckets = ["2X2", "3X3", "4X4"];
 export const willhabenMinArea = 45;
+export const willhabenMaxTotalCost = 1550;
 export const willhabenRowsPerPage = 90;
 export const willhabenRecentPeriod = "2";
 export const willhabenRefreshIntervalMs = 60_000;

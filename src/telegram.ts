@@ -19,6 +19,71 @@ export type TelegramUpdate = {
   };
 };
 
+const telegramRateState = {
+  nextAllowedAt: 0,
+};
+const telegramMinIntervalMs = 1000;
+
+const delay = (ms: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+const parseRetryAfterMs = (result: TelegramRequestResult) => {
+  if (result.status !== 429 || !result.text) return null;
+  try {
+    const parsed = JSON.parse(result.text) as {
+      parameters?: { retry_after?: number };
+    };
+    const seconds = parsed?.parameters?.retry_after;
+    if (typeof seconds === "number" && Number.isFinite(seconds)) {
+      return Math.max(0, seconds) * 1000;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+};
+
+const waitForTelegramSlot = async () => {
+  const waitMs = telegramRateState.nextAllowedAt - Date.now();
+  if (waitMs > 0) {
+    await delay(waitMs);
+  }
+};
+
+const markTelegramCooldown = (retryAfterMs: number) => {
+  telegramRateState.nextAllowedAt = Math.max(
+    telegramRateState.nextAllowedAt,
+    Date.now() + retryAfterMs,
+  );
+};
+
+const telegramRequestWithRetry = async (
+  config: TelegramConfig,
+  method: string,
+  payload: Record<string, unknown>,
+) => {
+  await waitForTelegramSlot();
+  const result = await telegramRequest(config, method, payload);
+  telegramRateState.nextAllowedAt = Math.max(
+    telegramRateState.nextAllowedAt,
+    Date.now() + telegramMinIntervalMs,
+  );
+  const retryAfterMs = parseRetryAfterMs(result);
+  if (retryAfterMs !== null) {
+    markTelegramCooldown(retryAfterMs);
+    await delay(retryAfterMs);
+    const retryResult = await telegramRequest(config, method, payload);
+    telegramRateState.nextAllowedAt = Math.max(
+      telegramRateState.nextAllowedAt,
+      Date.now() + telegramMinIntervalMs,
+    );
+    return retryResult;
+  }
+  return result;
+};
+
 const escapeTelegramHtml = (value: string) =>
   value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
@@ -103,7 +168,7 @@ export const sendTelegramMessage = async (
   if (options?.keyboard) {
     payload.reply_markup = options.keyboard;
   }
-  const result = await telegramRequest(config, "sendMessage", payload);
+  const result = await telegramRequestWithRetry(config, "sendMessage", payload);
   if (!result.ok) {
     console.warn("[telegram] sendMessage failed", result.status, result.text?.slice(0, 200));
   }
@@ -124,7 +189,7 @@ const sendTelegramMediaGroup = async (
     caption: index === 0 ? caption : undefined,
     parse_mode: index === 0 ? "HTML" : undefined,
   }));
-  const result = await telegramRequest(config, "sendMediaGroup", {
+  const result = await telegramRequestWithRetry(config, "sendMediaGroup", {
     chat_id: config.chatId,
     media,
   });

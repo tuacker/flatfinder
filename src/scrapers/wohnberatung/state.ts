@@ -69,6 +69,7 @@ export type WillhabenRecord = {
   costs?: Record<string, string>;
   primaryCost?: string | null;
   primaryCostLabel?: string | null;
+  totalCostValue?: number | null;
   firstSeenAt: string;
   lastSeenAt: string;
   seenAt?: string | null;
