@@ -27,24 +27,6 @@ const highlightNew = () => {
   });
 };
 
-const updateRefreshLabel = () => {
-  const updatedAt = document.body.getAttribute("data-last-scrape-at");
-  const label = document.getElementById("last-refresh");
-  if (!label || !updatedAt) return;
-  const diffMs = Date.now() - new Date(updatedAt).getTime();
-  if (Number.isNaN(diffMs)) return;
-  if (diffMs < 0) {
-    label.textContent = "just now";
-    label.title = updatedAt;
-    return;
-  }
-  const minutes = Math.floor(diffMs / 60000);
-  const hours = Math.floor(minutes / 60);
-  const value = hours > 0 ? `${hours}h ${minutes % 60}m` : `${minutes}m`;
-  label.textContent = `${value} ago`;
-  label.title = updatedAt;
-};
-
 const updateNextRefreshLabel = () => {
   const willhabenLabel = document.getElementById("next-refresh-willhaben");
   const wohnberatungLabel = document.getElementById("next-refresh-wohnberatung");
@@ -72,7 +54,6 @@ const refreshDerivedUi = () => {
   updateCountdowns();
   updateRefreshCountdowns();
   highlightNew();
-  updateRefreshLabel();
   updateNextRefreshLabel();
 };
 
@@ -1085,7 +1066,6 @@ const initEntryActions = () => {
 
         if (payload.updatedAt) {
           document.body.setAttribute("data-updated-at", payload.updatedAt);
-          updateRefreshLabel();
         }
 
         const seenAt = payload.item?.seenAt ?? null;
@@ -1216,7 +1196,6 @@ const initCarousel = () => {
 
 type FragmentPayload = {
   updatedAt: string | null;
-  lastScrapeAt: string | null;
   wohnberatungNextRefreshAt: number;
   willhabenNextRefreshAt: number;
   rateLimitCount: number;
@@ -1282,7 +1261,6 @@ const applyFragments = (payload: FragmentPayload) => {
       .filter((id): id is string => Boolean(id)),
   );
   document.body.setAttribute("data-updated-at", payload.updatedAt ?? "");
-  document.body.setAttribute("data-last-scrape-at", payload.lastScrapeAt ?? "");
   document.body.setAttribute(
     "data-next-refresh-wohnberatung",
     String(payload.wohnberatungNextRefreshAt),
@@ -1374,7 +1352,6 @@ const initEvents = () => {
           String(payload.nextRefreshWillhaben),
         );
       }
-      updateRefreshLabel();
       updateNextRefreshLabel();
     } catch {
       return;

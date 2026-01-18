@@ -1,9 +1,4 @@
-import {
-  planungsprojekteIntervalMinutes,
-  rateLimitMonthly,
-  wohnungssucheIntervalMinutes,
-} from "../src/scrapers/wohnberatung/config.js";
-import { willhabenRefreshIntervalMs } from "../src/scrapers/willhaben/config.js";
+import { rateLimitMonthly } from "../src/scrapers/wohnberatung/config.js";
 import type {
   FlatfinderState,
   TelegramConfig,
@@ -14,7 +9,6 @@ import { comparePriority } from "../src/shared/interest-priority.js";
 import { formatRefreshLeft, formatTimeLeft } from "./time.js";
 
 export type RenderOptions = {
-  nextRefreshAt: number;
   wohnberatungNextRefreshAt: number;
   willhabenNextRefreshAt: number;
   sourceFilter?: SourceFilter;
@@ -23,7 +17,6 @@ export type RenderOptions = {
 
 export type RenderFragments = {
   updatedAt: string | null;
-  lastScrapeAt: string | null;
   wohnberatungNextRefreshAt: number;
   willhabenNextRefreshAt: number;
   rateLimitCount: number;
@@ -948,7 +941,6 @@ export const renderFragments = (
   const sections = buildSections(state, telegramConfig, options.willhabenFilters);
   return {
     updatedAt: state.updatedAt ?? null,
-    lastScrapeAt: state.lastScrapeAt ?? null,
     wohnberatungNextRefreshAt: options.wohnberatungNextRefreshAt,
     willhabenNextRefreshAt: options.willhabenNextRefreshAt,
     rateLimitCount: state.rateLimit.count,
@@ -973,8 +965,6 @@ export const renderPage = (
   const sections = buildSections(state, telegramConfig, options.willhabenFilters);
 
   const updatedAt = state.updatedAt ?? "";
-  const lastScrapeAt = state.lastScrapeAt ?? "";
-
   return `
     <!doctype html>
     <html lang="de">
@@ -985,7 +975,7 @@ export const renderPage = (
         <link rel="stylesheet" href="/app.css" />
         <script src="/app.js" type="module" defer></script>
       </head>
-      <body data-updated-at="${updatedAt}" data-last-scrape-at="${lastScrapeAt}" data-next-refresh="${options.nextRefreshAt}" data-next-refresh-wohnberatung="${options.wohnberatungNextRefreshAt}" data-next-refresh-willhaben="${options.willhabenNextRefreshAt}" data-view="root" data-source="${sourceFilter}">
+      <body data-updated-at="${updatedAt}" data-next-refresh-wohnberatung="${options.wohnberatungNextRefreshAt}" data-next-refresh-willhaben="${options.willhabenNextRefreshAt}" data-view="root" data-source="${sourceFilter}">
         <div class="header">
         <div class="header-row">
             <div class="header-title">
@@ -1036,11 +1026,3 @@ export const renderPage = (
     </html>
   `;
 };
-
-export const getNextRefreshFallback = () =>
-  Date.now() +
-  Math.min(
-    wohnungssucheIntervalMinutes * 60 * 1000,
-    planungsprojekteIntervalMinutes * 60 * 1000,
-    willhabenRefreshIntervalMs,
-  );

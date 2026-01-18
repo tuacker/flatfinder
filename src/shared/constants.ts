@@ -1,0 +1,3 @@
+export const SIGNUP_LIMIT = 3;
+export const INTEREST_REFRESH_INTERVAL_MS = 15_000;
+export const INTEREST_WATCH_JITTER_MS = 4_000;

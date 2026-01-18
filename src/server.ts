@@ -3,7 +3,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import {
   assetsDir,
-  baseUrl,
   planungsprojekteIntervalMinutes,
   rateLimitMonthly,
   storageStatePath,
@@ -20,7 +19,6 @@ import {
   type TelegramConfig,
 } from "./scrapers/wohnberatung/state.js";
 import {
-  getNextRefreshFallback,
   renderFragments,
   renderPage,
   type WillhabenFilters,
@@ -31,7 +29,31 @@ import { willhabenRefreshIntervalMs } from "./scrapers/willhaben/config.js";
 import { fetchTelegramUpdates, sendTelegramMessage, telegramRequest } from "./telegram.js";
 import { createSerialQueue } from "./runtime/scheduler.js";
 import { registerScraperJobs } from "./runtime/scraper-jobs.js";
-import { comparePriority, sortByPriority } from "./shared/interest-priority.js";
+import { sortByPriority } from "./shared/interest-priority.js";
+import { INTEREST_REFRESH_INTERVAL_MS, SIGNUP_LIMIT } from "./shared/constants.js";
+import { getCollection, getPageForType } from "./shared/collections.js";
+import {
+  clearWatch,
+  ensureInterest,
+  getNextWatchAt,
+  getSignedItems,
+  getSwapCandidates,
+  getWorstSignedItem,
+  isLocked,
+  markSigned,
+  scheduleWatch,
+  shouldWatchWhenFull,
+} from "./shared/interest-utils.js";
+import {
+  detectInterestResult,
+  detectSignedFromResponse,
+  isSignupAvailable,
+} from "./scrapers/wohnberatung/interest-response.js";
+import {
+  buildWohnberatungUrl,
+  fetchWohnberatungHtml,
+  loadAuthCookies,
+} from "./scrapers/wohnberatung/wohnberatung-client.js";
 
 const port = 3000;
 
@@ -39,46 +61,6 @@ const nextRefresh: Record<"wohnungen" | "planungsprojekte" | "willhaben", number
   wohnungen: 0,
   planungsprojekte: 0,
   willhaben: 0,
-};
-
-type StorageStateCookie = {
-  name: string;
-  value: string;
-  domain?: string;
-  path?: string;
-};
-
-const loadAuthCookies = async (): Promise<string> => {
-  const raw = await fs.readFile(storageStatePath, "utf8");
-  const parsed = JSON.parse(raw) as { cookies?: StorageStateCookie[] } | null;
-  const cookies = Array.isArray(parsed?.cookies) ? parsed.cookies : [];
-  const serialized = cookies
-    .filter((cookie) => cookie.domain?.includes("wohnberatung-wien.at"))
-    .map((cookie) => `${cookie.name}=${cookie.value}`)
-    .join("; ");
-  return serialized;
-};
-
-const buildWohnberatungUrl = (page: "wohnung" | "projekt", id: string, flag?: string) => {
-  const url = new URL(baseUrl);
-  url.searchParams.set("page", page);
-  url.searchParams.set("id", id);
-  if (flag) {
-    url.searchParams.set(flag, "true");
-  }
-  return url.toString();
-};
-
-const fetchWohnberatungHtml = async (url: string, cookieHeader: string) => {
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      cookie: cookieHeader,
-      "user-agent": "flatfinder",
-    },
-  });
-  const html = await response.text();
-  return { response, html };
 };
 
 const nowIso = () => new Date().toISOString();
@@ -110,129 +92,6 @@ const parseWillhabenFilters = (query: Record<string, unknown>): WillhabenFilters
     districts: parseListParam(query.wh_districts),
     rooms: parseListParam(query.wh_rooms),
   };
-};
-
-const signupLimit = 3;
-const interestRefreshIntervalMs = 15_000;
-
-const detectInterestResult = (html: string) => {
-  if (/Sie haben sich unverbindlich angemeldet/i.test(html)) return "signed";
-  if (/kein Interesse mehr/i.test(html)) return "signed";
-  if (/maximale Anzahl an Interessent/i.test(html)) return "full";
-  if (/maximale Anzahl.*Anmeld/i.test(html)) return "limit";
-  if (/nur\s*3\s*Wohnung/i.test(html)) return "limit";
-  if (/bereits\s*3\s*Wohnung/i.test(html)) return "limit";
-  if (/unverbindlich anmelden/i.test(html)) return "available";
-  return "unknown";
-};
-
-const detectSignedFromResponse = (html: string) => {
-  const result = detectInterestResult(html);
-  if (result === "signed") return true;
-  if (result === "available" || result === "full" || result === "limit") return false;
-  return null;
-};
-
-const isSignupAvailable = (html: string) =>
-  /unverbindlich anmelden/i.test(html) && !/maximale Anzahl an Interessent/i.test(html);
-
-const getCollection = (state: Awaited<ReturnType<typeof loadState>>, type: string) =>
-  type === "wohnungen"
-    ? state.wohnungen
-    : type === "planungsprojekte"
-      ? state.planungsprojekte
-      : type === "willhaben"
-        ? state.willhaben
-        : null;
-
-const isLocked = (item: {
-  flags?: { angemeldet?: boolean };
-  interest?: { locked?: boolean | null };
-}) => Boolean(item.flags?.angemeldet && item.interest?.locked);
-
-const getSignedItems = (
-  items: Array<{
-    flags: { angemeldet: boolean };
-    interest?: { rank?: number | null; requestedAt?: string | null; locked?: boolean | null };
-  }>,
-) => items.filter((item) => item.flags.angemeldet);
-
-const getSwapCandidates = (
-  items: Array<{
-    flags: { angemeldet: boolean };
-    interest?: { rank?: number | null; requestedAt?: string | null; locked?: boolean | null };
-  }>,
-) => getSignedItems(items).filter((item) => !isLocked(item));
-
-const getPageForType = (type: "wohnungen" | "planungsprojekte") =>
-  type === "wohnungen" ? "wohnung" : "projekt";
-
-const ensureInterest = <T extends { interest?: InterestInfo }>(item: T) => {
-  if (!item.interest) item.interest = {};
-  return item.interest;
-};
-
-const getWorstSignedItem = (
-  items: Array<{ id?: string | null; interest?: { rank?: number | null; requestedAt?: string } }>,
-) => {
-  if (items.length === 0) return null;
-  return items.reduce((worst, current) => {
-    if (comparePriority(current, worst) > 0) return current;
-    return worst;
-  }, items[0]);
-};
-
-const shouldWatchWhenFull = (
-  candidate: { interest?: { rank?: number | null; requestedAt?: string | null } },
-  signedItems: Array<{
-    flags?: { angemeldet?: boolean };
-    interest?: { rank?: number | null; requestedAt?: string | null; locked?: boolean | null };
-  }>,
-) => {
-  const worst = getWorstSignedItem(signedItems);
-  if (!worst) return false;
-  return comparePriority(candidate, worst) < 0;
-};
-
-const stableHash = (value: string) => {
-  let hash = 0;
-  for (let i = 0; i < value.length; i += 1) {
-    hash = (hash * 31 + value.charCodeAt(i)) | 0;
-  }
-  return Math.abs(hash);
-};
-
-const getWatchDelayMs = (id?: string | null) => {
-  if (!id) return interestRefreshIntervalMs;
-  const jitter = stableHash(id) % 4000;
-  return interestRefreshIntervalMs + jitter;
-};
-
-const scheduleWatch = (item: {
-  id?: string | null;
-  interest?: { watch?: { nextCheckAt?: string | null } };
-}) => {
-  const nextCheckAt = new Date(Date.now() + getWatchDelayMs(item.id)).toISOString();
-  const interest = ensureInterest(item);
-  interest.watch = {
-    ...interest.watch,
-    nextCheckAt,
-  };
-};
-
-const clearWatch = (item: { interest?: { watch?: { nextCheckAt?: string | null } } }) => {
-  if (!item.interest) return;
-  item.interest.watch = undefined;
-};
-
-const markSigned = (
-  item: { flags: { angemeldet: boolean }; interest?: InterestInfo },
-  nowIso: string,
-) => {
-  item.flags.angemeldet = true;
-  const interest = ensureInterest(item);
-  interest.requestedAt = interest.requestedAt ?? nowIso;
-  clearWatch(item);
 };
 
 const executeSwap = async (options: {
@@ -299,7 +158,7 @@ const fillOpenSlots = async (options: {
   if (!collection) return false;
   let signedItems = getSignedItems(collection);
   let signedCount = signedItems.length;
-  if (signedCount >= signupLimit) return false;
+  if (signedCount >= SIGNUP_LIMIT) return false;
 
   const candidates = sortByPriority(
     collection.filter((item) =>
@@ -309,7 +168,7 @@ const fillOpenSlots = async (options: {
 
   let didUpdate = false;
   for (const item of candidates) {
-    if (signedCount >= signupLimit) break;
+    if (signedCount >= SIGNUP_LIMIT) break;
     if (!item.id) continue;
     const page = getPageForType(type);
     const { html } = await fetchWohnberatungHtml(buildWohnberatungUrl(page, item.id), cookieHeader);
@@ -356,10 +215,6 @@ const getNextWohnberatungRefreshAt = () => getNextRefreshAtFor(["wohnungen", "pl
 
 const getNextWillhabenRefreshAt = () => getNextRefreshAtFor(["willhaben"]);
 
-const getNextRefreshAtWithFallback = () =>
-  getNextRefreshAtFor(Object.keys(nextRefresh) as Array<keyof typeof nextRefresh>) ||
-  getNextRefreshFallback();
-
 const getNextWillhabenRefreshAtWithFallback = () =>
   getNextWillhabenRefreshAt() || Date.now() + willhabenRefreshIntervalMs;
 
@@ -371,6 +226,19 @@ const getSourceFilter = (value: unknown): SourceFilter => {
   if (value === "wohnberatung" || value === "willhaben") return value;
   return "all";
 };
+
+const buildRenderOptions = (query: Record<string, unknown>) => ({
+  sourceFilter: getSourceFilter(query.source),
+  willhabenFilters: parseWillhabenFilters(query),
+  wohnberatungNextRefreshAt: getNextWohnberatungRefreshAtWithFallback(),
+  willhabenNextRefreshAt: getNextWillhabenRefreshAtWithFallback(),
+});
+
+const buildFragmentOptions = (query: Record<string, unknown>) => ({
+  willhabenFilters: parseWillhabenFilters(query),
+  wohnberatungNextRefreshAt: getNextWohnberatungRefreshAtWithFallback(),
+  willhabenNextRefreshAt: getNextWillhabenRefreshAtWithFallback(),
+});
 
 let scheduleInterestRefresh: () => void = () => {};
 
@@ -422,24 +290,11 @@ const main = async () => {
   let interestRefreshRunning = false;
   let interestRefreshTimer: NodeJS.Timeout | null = null;
 
-  const getNextInterestCheckAt = () => {
-    let nextAt: number | null = null;
-    const all = [...state.wohnungen, ...state.planungsprojekte];
-    for (const item of all) {
-      const nextCheckAt = item.interest?.watch?.nextCheckAt;
-      if (!nextCheckAt) continue;
-      const time = new Date(nextCheckAt).getTime();
-      if (!Number.isFinite(time)) continue;
-      if (nextAt === null || time < nextAt) nextAt = time;
-    }
-    return nextAt;
-  };
-
   scheduleInterestRefresh = () => {
     if (interestRefreshTimer) clearTimeout(interestRefreshTimer);
     const now = Date.now();
-    const nextAt = getNextInterestCheckAt();
-    const delay = nextAt === null ? interestRefreshIntervalMs : Math.max(0, nextAt - now);
+    const nextAt = getNextWatchAt([...state.wohnungen, ...state.planungsprojekte]);
+    const delay = nextAt === null ? INTEREST_REFRESH_INTERVAL_MS : Math.max(0, nextAt - now);
     interestRefreshTimer = setTimeout(() => {
       interestRefreshTimer = null;
       void runInterestRefresh();
@@ -493,7 +348,7 @@ const main = async () => {
             if (!item.id) continue;
 
             const shouldWatch =
-              signedCount < signupLimit || shouldWatchWhenFull(item, swapCandidates);
+              signedCount < SIGNUP_LIMIT || shouldWatchWhenFull(item, swapCandidates);
             if (!shouldWatch) {
               if (item.interest?.watch) {
                 clearWatch(item);
@@ -521,16 +376,18 @@ const main = async () => {
               didUpdate = true;
               continue;
             }
-            ensureInterest(item).watch = {
+            const interest = ensureInterest(item);
+            interest.watch = {
+              ...interest.watch,
               lastCheckAt: nowStamp,
-              nextCheckAt: new Date(now + getWatchDelayMs(item.id)).toISOString(),
             };
+            scheduleWatch(item);
             didUpdate = true;
 
             const available = isSignupAvailable(html);
             if (!available) continue;
 
-            if (signedCount < signupLimit) {
+            if (signedCount < SIGNUP_LIMIT) {
               const { html: confirmHtml } = await fetchWohnberatungHtml(
                 buildWohnberatungUrl(page, item.id, "anmelden_confirm"),
                 cookieHeader,
@@ -669,7 +526,7 @@ const main = async () => {
       return { ok: true, signed: true } as const;
     }
 
-    if (signedCount < signupLimit) {
+    if (signedCount < SIGNUP_LIMIT) {
       const { response, html } = await fetchWohnberatungHtml(
         buildWohnberatungUrl(page, item.id ?? "", "anmelden_confirm"),
         cookieHeader,
@@ -1159,54 +1016,14 @@ const main = async () => {
   });
 
   app.get("/api/fragment", (req, res) => {
-    const willhabenFilters = parseWillhabenFilters(req.query);
-    res.json(
-      renderFragments(
-        state,
-        {
-          nextRefreshAt: getNextRefreshAtWithFallback(),
-          willhabenFilters,
-          wohnberatungNextRefreshAt: getNextWohnberatungRefreshAtWithFallback(),
-          willhabenNextRefreshAt: getNextWillhabenRefreshAtWithFallback(),
-        },
-        telegramConfig,
-      ),
-    );
+    res.json(renderFragments(state, buildFragmentOptions(req.query), telegramConfig));
   });
   app.get("/api/state", (_, res) => res.json(state));
   app.get(["/hidden", "/interested", "/settings"], (req, res) => {
-    const sourceFilter = getSourceFilter(req.query.source);
-    const willhabenFilters = parseWillhabenFilters(req.query);
-    res.send(
-      renderPage(
-        state,
-        {
-          nextRefreshAt: getNextRefreshAtWithFallback(),
-          sourceFilter,
-          willhabenFilters,
-          wohnberatungNextRefreshAt: getNextWohnberatungRefreshAtWithFallback(),
-          willhabenNextRefreshAt: getNextWillhabenRefreshAtWithFallback(),
-        },
-        telegramConfig,
-      ),
-    );
+    res.send(renderPage(state, buildRenderOptions(req.query), telegramConfig));
   });
   app.get("/", (req, res) => {
-    const sourceFilter = getSourceFilter(req.query.source);
-    const willhabenFilters = parseWillhabenFilters(req.query);
-    res.send(
-      renderPage(
-        state,
-        {
-          nextRefreshAt: getNextRefreshAtWithFallback(),
-          sourceFilter,
-          willhabenFilters,
-          wohnberatungNextRefreshAt: getNextWohnberatungRefreshAtWithFallback(),
-          willhabenNextRefreshAt: getNextWillhabenRefreshAtWithFallback(),
-        },
-        telegramConfig,
-      ),
-    );
+    res.send(renderPage(state, buildRenderOptions(req.query), telegramConfig));
   });
 
   app.listen(port, () => {
