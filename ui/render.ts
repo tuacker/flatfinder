@@ -3,11 +3,15 @@ import {
   rateLimitMonthly,
   wohnungssucheIntervalMinutes,
 } from "../src/scrapers/wohnberatung/config.js";
+import { willhabenRefreshIntervalMs } from "../src/scrapers/willhaben/config.js";
 import type {
   FlatfinderState,
   TelegramConfig,
   WohnungRecord,
+  WillhabenRecord,
 } from "../src/scrapers/wohnberatung/state.js";
+import { comparePriority } from "../src/shared/interest-priority.js";
+import { formatRefreshLeft, formatTimeLeft } from "./time.js";
 
 export type RenderOptions = {
   nextRefreshAt: number;
@@ -24,6 +28,7 @@ export type RenderFragments = {
     interested: string;
     wohnungen: string;
     planungsprojekte: string;
+    willhaben: string;
     settings: string;
   };
 };
@@ -40,55 +45,6 @@ const safeValue = (value: string | number | null | undefined, fallback = "-") =>
   escapeHtml(value ?? fallback);
 
 const safeAttribute = (value: string | number | null | undefined) => escapeHtml(value ?? "");
-
-const formatTimeLeft = (iso: string | null) => {
-  if (!iso) return null;
-  const diffMs = new Date(iso).getTime() - Date.now();
-  if (Number.isNaN(diffMs)) return null;
-  if (diffMs <= 0) return "abgelaufen";
-  const totalMinutes = Math.floor(diffMs / 60000);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return `${hours}h ${minutes}m`;
-};
-
-const formatRefreshLeft = (iso: string | null) => {
-  if (!iso) return null;
-  const diffMs = new Date(iso).getTime() - Date.now();
-  if (Number.isNaN(diffMs)) return null;
-  if (diffMs <= 0) return "now";
-  if (diffMs < 60000) return `${Math.ceil(diffMs / 1000)}s`;
-  return formatTimeLeft(iso);
-};
-
-const getRequestedAtValue = (value: string | null | undefined) => {
-  if (!value) return Number.NEGATIVE_INFINITY;
-  const timestamp = new Date(value).getTime();
-  return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
-};
-
-const getPriority = (item: {
-  interest?: { rank?: number | null; requestedAt?: string | null };
-}) => {
-  if (typeof item.interest?.rank === "number") {
-    return { bucket: 0, value: item.interest.rank };
-  }
-  return { bucket: 1, value: getRequestedAtValue(item.interest?.requestedAt) };
-};
-
-const comparePriority = (
-  left: { interest?: { rank?: number | null; requestedAt?: string | null } },
-  right: { interest?: { rank?: number | null; requestedAt?: string | null } },
-) => {
-  const leftPriority = getPriority(left);
-  const rightPriority = getPriority(right);
-  if (leftPriority.bucket !== rightPriority.bucket) {
-    return leftPriority.bucket - rightPriority.bucket;
-  }
-  if (leftPriority.value < rightPriority.value) return -1;
-  if (leftPriority.value > rightPriority.value) return 1;
-  return 0;
-};
 
 const cleanValue = (value: string | null) => {
   if (!value) return "-";
@@ -430,6 +386,103 @@ const renderWohnungRow = (item: WohnungRecord, options: RenderRowOptions = {}) =
   `;
 };
 
+const renderWillhabenRow = (item: WillhabenRecord) => {
+  const mapId = `details-${item.id}`;
+  const mapUrl = item.detail?.mapUrl ?? null;
+  const mapEmbed = mapUrl ? buildMapEmbedUrl(mapUrl) : null;
+
+  const images = item.images?.length ? item.images : item.thumbnailUrl ? [item.thumbnailUrl] : [];
+  const imageData = encodeImages(images);
+  const thumbSrc = item.thumbnailUrl ?? images[0] ?? null;
+  const thumb = thumbSrc
+    ? `<button class="image-button js-carousel" data-images="${imageData}">
+         <img class="thumb" src="${safeAttribute(thumbSrc)}" alt="" />
+       </button>`
+    : "";
+
+  const title = safeValue(item.location ?? item.title ?? null);
+  const secondary =
+    item.title && item.location && item.title !== item.location
+      ? `<div class="meta">${escapeHtml(item.title)}</div>`
+      : item.title && !item.location
+        ? `<div class="meta">${escapeHtml(item.title)}</div>`
+        : "";
+
+  const isHidden = Boolean(item.hiddenAt);
+  const isSeen = Boolean(item.seenAt);
+  const visibilityLabel = renderVisibilityLabel(isHidden);
+  const seenButton = !isSeen
+    ? `<button class="seen-toggle js-entry-action" data-action="toggleSeen" data-type="willhaben" data-id="${safeAttribute(item.id)}" aria-label="Mark seen">✓</button>`
+    : "";
+  const entryActions = `
+        <button class="btn btn-muted js-entry-action" data-action="toggleHidden" data-type="willhaben" data-id="${safeAttribute(item.id)}" aria-label="${isHidden ? "Unhide" : "Hide"}">${visibilityLabel}</button>
+      `;
+
+  const primaryLabel = item.primaryCostLabel ?? (item.primaryCost ? "Gesamtmiete" : null);
+  const costEntries = Object.entries(item.costs ?? {}).filter(
+    ([label]) => !primaryLabel || label !== primaryLabel,
+  );
+  const costFacts = [
+    ...(item.primaryCost
+      ? [
+          `<div class="fact"><span class="label">${escapeHtml(primaryLabel ?? "Gesamtmiete")}:</span><span class="value">${safeValue(item.primaryCost)}</span></div>`,
+        ]
+      : []),
+    ...costEntries.map(
+      ([label, value]) =>
+        `<div class="fact"><span class="label">${escapeHtml(label)}:</span><span class="value">${safeValue(value)}</span></div>`,
+    ),
+  ];
+
+  const detailsToggle =
+    mapEmbed || item.detail?.description
+      ? `<button class="btn js-toggle-map" data-target="${mapId}">Details</button>`
+      : "";
+  const description = item.detail?.description
+    ? `<div class="details-text">${escapeHtml(item.detail.description).replace(/\n/g, "<br />")}</div>`
+    : "";
+  const mapSection =
+    detailsToggle && (mapEmbed || description)
+      ? `<div id="${mapId}" class="map-container is-hidden">
+         ${mapEmbed ? `<iframe src="${safeAttribute(mapEmbed)}" loading="lazy" allowfullscreen></iframe>` : ""}
+         ${mapUrl ? `<a class="btn btn-primary" href="${safeAttribute(mapUrl)}" target="_blank">Google Maps ↗</a>` : ""}
+         ${description}
+       </div>`
+      : "";
+
+  const rowClasses = ["row"];
+  if (isSeen) rowClasses.push("is-seen");
+  if (!isSeen) rowClasses.push("is-new");
+
+  return `
+    <div class="${rowClasses.join(" ")}" data-type="willhaben" data-id="${safeAttribute(item.id)}" data-first-seen="${item.firstSeenAt}" data-seen-at="${safeAttribute(item.seenAt ?? "")}" data-hidden-at="${safeAttribute(item.hiddenAt ?? "")}">
+      ${seenButton}
+      ${thumb}
+      <div class="content">
+        <div class="row-header">
+          <div class="title-line">
+            <div class="title">${title}</div>
+          </div>
+          <div class="row-header-actions">
+            <div class="actions">
+              ${detailsToggle}
+              ${entryActions}
+              ${item.url ? `<a class="btn btn-primary" href="${safeAttribute(item.url)}" target="_blank">Open</a>` : ""}
+            </div>
+          </div>
+        </div>
+        ${secondary}
+        <div class="facts">
+          ${item.size ? `<div class="fact"><span class="label">Fläche:</span><span class="value">${safeValue(item.size)}</span></div>` : ""}
+          ${item.rooms ? `<div class="fact"><span class="label">Zimmer:</span><span class="value">${safeValue(item.rooms)}</span></div>` : ""}
+          ${costFacts.join("")}
+        </div>
+      </div>
+    </div>
+    ${mapSection}
+  `;
+};
+
 const renderSection = (
   title: string,
   items: string[],
@@ -573,6 +626,8 @@ const buildSections = (state: FlatfinderState, telegramConfig?: TelegramConfig |
   );
   const hiddenWohnungen = state.wohnungen.filter((item) => item.hiddenAt);
   const hiddenPlanungsprojekte = state.planungsprojekte.filter((item) => item.hiddenAt);
+  const visibleWillhaben = state.willhaben.filter((item) => !item.hiddenAt);
+  const hiddenWillhaben = state.willhaben.filter((item) => item.hiddenAt);
 
   const wohnungen = sortSeenLast(visibleWohnungen).map((item) =>
     renderWohnungRow(item, { showCountdown: true }),
@@ -580,6 +635,7 @@ const buildSections = (state: FlatfinderState, telegramConfig?: TelegramConfig |
   const planungsprojekte = sortSeenLast(visiblePlanungsprojekte).map((item) =>
     renderPlanungsprojektRow(item, { showCountdown: true }),
   );
+  const willhaben = sortSeenLast(visibleWillhaben).map((item) => renderWillhabenRow(item));
 
   const interestedWohnungenRows = sortByRank(interestedWohnungen).map((item) =>
     renderWohnungRow(item, { showRankControls: true, showRankLabel: true, showCountdown: true }),
@@ -601,12 +657,17 @@ const buildSections = (state: FlatfinderState, telegramConfig?: TelegramConfig |
       hiddenAt: item.hiddenAt ?? "",
       html: renderPlanungsprojektRow(item, { showCountdown: true }),
     })),
+    ...hiddenWillhaben.map((item) => ({
+      hiddenAt: item.hiddenAt ?? "",
+      html: renderWillhabenRow(item),
+    })),
   ].sort((a, b) => b.hiddenAt.localeCompare(a.hiddenAt));
 
   const hiddenRows = hiddenItems.map((item) => item.html);
   const hiddenCount = hiddenItems.length;
   const wohnungenCount = wohnungen.length;
   const planungsprojekteCount = planungsprojekte.length;
+  const willhabenCount = willhaben.length;
   const interestedSection = `
     <div class="section" id="interested-section" data-view-group="interested">
       <h2>Interested</h2>
@@ -643,9 +704,17 @@ const buildSections = (state: FlatfinderState, telegramConfig?: TelegramConfig |
       "planungsprojekte-section",
       "root",
     ),
+    willhabenSection: renderSection(
+      `Willhaben (${willhabenCount})`,
+      willhaben,
+      "willhaben-list",
+      "willhaben-section",
+      "root",
+    ),
     hiddenCount,
     wohnungenCount,
     planungsprojekteCount,
+    willhabenCount,
   };
 };
 
@@ -666,6 +735,7 @@ export const renderFragments = (
       interested: sections.interestedSection,
       wohnungen: sections.wohnungenSection,
       planungsprojekte: sections.planungsprojekteSection,
+      willhaben: sections.willhabenSection,
       settings: sections.settingsSection,
     },
   };
@@ -721,6 +791,7 @@ export const renderPage = (
         ${sections.interestedSection}
         ${sections.wohnungenSection}
         ${sections.planungsprojekteSection}
+        ${sections.willhabenSection}
 
         <div id="carousel" class="carousel hidden">
           <button class="close" aria-label="Close">×</button>
@@ -736,4 +807,9 @@ export const renderPage = (
 };
 
 export const getNextRefreshFallback = () =>
-  Date.now() + Math.min(wohnungssucheIntervalMinutes, planungsprojekteIntervalMinutes) * 60 * 1000;
+  Date.now() +
+  Math.min(
+    wohnungssucheIntervalMinutes * 60 * 1000,
+    planungsprojekteIntervalMinutes * 60 * 1000,
+    willhabenRefreshIntervalMs,
+  );

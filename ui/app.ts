@@ -1,22 +1,4 @@
-const formatTimeLeft = (iso: string | null) => {
-  if (!iso) return null;
-  const diffMs = new Date(iso).getTime() - Date.now();
-  if (Number.isNaN(diffMs)) return null;
-  if (diffMs <= 0) return "abgelaufen";
-  const totalMinutes = Math.floor(diffMs / 60000);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return `${hours}h ${minutes}m`;
-};
-
-const formatRefreshLeft = (iso: string | null) => {
-  if (!iso) return null;
-  const diffMs = new Date(iso).getTime() - Date.now();
-  if (Number.isNaN(diffMs)) return null;
-  if (diffMs <= 0) return "now";
-  if (diffMs < 60000) return `${Math.ceil(diffMs / 1000)}s`;
-  return formatTimeLeft(iso);
-};
+import { formatRefreshLeft, formatTimeLeft } from "./time.js";
 
 const updateCountdowns = () => {
   document.querySelectorAll<HTMLElement>(".time[data-end]").forEach((node) => {
@@ -167,10 +149,15 @@ const syncViewWithLocation = (replace: boolean) => {
 
 let suppressReloadUntil = 0;
 
+const rowListIds = {
+  wohnungen: "wohnungen-list",
+  planungsprojekte: "planungsprojekte-list",
+  willhaben: "willhaben-list",
+} as const;
+
 const getRowList = (type: string) => {
-  if (type === "wohnungen") return document.getElementById("wohnungen-list");
-  if (type === "planungsprojekte") return document.getElementById("planungsprojekte-list");
-  return null;
+  const listId = rowListIds[type as keyof typeof rowListIds];
+  return listId ? document.getElementById(listId) : null;
 };
 
 const getMapSection = (row: HTMLElement) => {
@@ -1076,6 +1063,7 @@ type FragmentPayload = {
     interested: string;
     wohnungen: string;
     planungsprojekte: string;
+    willhaben: string;
     settings: string;
   };
 };
@@ -1107,6 +1095,7 @@ const applyFragments = (payload: FragmentPayload) => {
   replaceSection("interested-section", payload.sections.interested);
   replaceSection("wohnungen-section", payload.sections.wohnungen);
   replaceSection("planungsprojekte-section", payload.sections.planungsprojekte);
+  replaceSection("willhaben-section", payload.sections.willhaben);
   if (document.body.getAttribute("data-view") !== "settings" && !settingsDirty) {
     replaceSection("settings-section", payload.sections.settings);
   }

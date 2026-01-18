@@ -454,6 +454,12 @@ h1 {
   border: 0;
   border-radius: 10px;
 }
+.map-container .details-text {
+  max-width: 720px;
+  font-size: 14px;
+  color: #0f172a;
+  line-height: 1.5;
+}
 .map-container.is-hidden {
   display: none;
 }

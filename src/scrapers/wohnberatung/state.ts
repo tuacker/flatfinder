@@ -1,6 +1,4 @@
-import fs from "node:fs/promises";
-import path from "node:path";
-import { statePath, telegramConfigPath } from "./config.js";
+import { getConfig, getMeta, getDb, loadItems, saveItems, setConfig, setMeta } from "../../db.js";
 import type { Planungsprojekt } from "./parse-planungsprojekte.js";
 import type { WohnungDetail } from "./parse-wohnung-detail.js";
 import type { WohnungListItem } from "./parse-wohnungen-list.js";
@@ -45,6 +43,40 @@ export type WohnungRecord = WohnungListItem & {
   telegramNotifiedAt?: string | null;
 };
 
+export type WillhabenDetail = {
+  description?: string | null;
+  images?: string[];
+  coordinates?: string | null;
+  mapUrl?: string | null;
+  costs?: Record<string, string>;
+  primaryCost?: string | null;
+  primaryCostLabel?: string | null;
+};
+
+export type WillhabenRecord = {
+  id: string;
+  title: string | null;
+  location: string | null;
+  address: string | null;
+  postalCode: string | null;
+  district: string | null;
+  url: string | null;
+  thumbnailUrl?: string | null;
+  images?: string[];
+  size?: string | null;
+  rooms?: string | null;
+  publishedAt?: string | null;
+  costs?: Record<string, string>;
+  primaryCost?: string | null;
+  primaryCostLabel?: string | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  seenAt?: string | null;
+  hiddenAt?: string | null;
+  detail?: WillhabenDetail;
+  telegramNotifiedAt?: string | null;
+};
+
 export type RateLimitState = {
   month: string;
   count: number;
@@ -64,12 +96,26 @@ export type TelegramConfig = {
 export type FlatfinderState = {
   updatedAt: string | null;
   lastScrapeAt?: string | null;
+  lastWohnungenFetchAt?: string | null;
+  lastPlanungsprojekteFetchAt?: string | null;
+  lastWillhabenFetchAt?: string | null;
   planungsprojekte: PlanungsprojektRecord[];
   wohnungen: WohnungRecord[];
+  willhaben: WillhabenRecord[];
   rateLimit: RateLimitState;
 };
 
 const currentMonth = () => new Date().toISOString().slice(0, 7);
+
+const telegramConfigKey = "telegram.config";
+const metaKeys = {
+  updatedAt: "state.updatedAt",
+  lastScrapeAt: "state.lastScrapeAt",
+  lastWohnungenFetchAt: "state.lastWohnungenFetchAt",
+  lastPlanungsprojekteFetchAt: "state.lastPlanungsprojekteFetchAt",
+  lastWillhabenFetchAt: "state.lastWillhabenFetchAt",
+  rateLimit: "state.rateLimit",
+} as const;
 
 export const defaultTelegramConfig = (): TelegramConfig => ({
   enabled: false,
@@ -98,58 +144,84 @@ export const normalizeTelegramConfig = (
 const defaultState = (): FlatfinderState => ({
   updatedAt: null,
   lastScrapeAt: null,
+  lastWohnungenFetchAt: null,
+  lastPlanungsprojekteFetchAt: null,
+  lastWillhabenFetchAt: null,
   planungsprojekte: [],
   wohnungen: [],
+  willhaben: [],
   rateLimit: {
     month: currentMonth(),
     count: 0,
   },
 });
 
-const normalizeState = (raw: FlatfinderState | null | undefined): FlatfinderState => {
-  if (!raw) return defaultState();
-  return {
-    updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : null,
-    lastScrapeAt: typeof raw.lastScrapeAt === "string" ? raw.lastScrapeAt : null,
-    planungsprojekte: Array.isArray(raw.planungsprojekte) ? raw.planungsprojekte : [],
-    wohnungen: Array.isArray(raw.wohnungen) ? raw.wohnungen : [],
-    rateLimit: {
-      month: typeof raw.rateLimit?.month === "string" ? raw.rateLimit.month : currentMonth(),
-      count: typeof raw.rateLimit?.count === "number" ? raw.rateLimit.count : 0,
-    },
-  };
+const ensureDb = () => {
+  getDb();
 };
 
 export const loadState = async (): Promise<FlatfinderState> => {
-  try {
-    const data = await fs.readFile(statePath, "utf8");
-    return normalizeState(JSON.parse(data) as FlatfinderState);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return defaultState();
+  ensureDb();
+  const rateLimitRaw = getMeta(metaKeys.rateLimit);
+  let rateLimit = defaultState().rateLimit;
+  if (rateLimitRaw) {
+    try {
+      const parsed = JSON.parse(rateLimitRaw) as RateLimitState;
+      if (typeof parsed?.month === "string" && typeof parsed?.count === "number") {
+        rateLimit = parsed;
+      }
+    } catch {
+      // ignore
     }
-    throw error;
   }
+
+  const valueOrNull = (key: string) => {
+    const value = getMeta(key);
+    return value && value.length > 0 ? value : null;
+  };
+
+  return {
+    updatedAt: valueOrNull(metaKeys.updatedAt),
+    lastScrapeAt: valueOrNull(metaKeys.lastScrapeAt),
+    lastWohnungenFetchAt: valueOrNull(metaKeys.lastWohnungenFetchAt),
+    lastPlanungsprojekteFetchAt: valueOrNull(metaKeys.lastPlanungsprojekteFetchAt),
+    lastWillhabenFetchAt: valueOrNull(metaKeys.lastWillhabenFetchAt),
+    planungsprojekte: loadItems<PlanungsprojektRecord>("wohnberatung", "planungsprojekte"),
+    wohnungen: loadItems<WohnungRecord>("wohnberatung", "wohnungen"),
+    willhaben: loadItems<WillhabenRecord>("willhaben", "wohnungen"),
+    rateLimit,
+  };
 };
 
 export const saveState = async (state: FlatfinderState) => {
-  await fs.mkdir(path.dirname(statePath), { recursive: true });
-  await fs.writeFile(statePath, JSON.stringify(state, null, 2), "utf8");
+  ensureDb();
+  const updatedAt = state.updatedAt ?? new Date().toISOString();
+  saveItems("wohnberatung", "wohnungen", state.wohnungen, updatedAt);
+  saveItems("wohnberatung", "planungsprojekte", state.planungsprojekte, updatedAt);
+  saveItems("willhaben", "wohnungen", state.willhaben, updatedAt);
+
+  setMeta(metaKeys.updatedAt, state.updatedAt ?? "");
+  setMeta(metaKeys.lastScrapeAt, state.lastScrapeAt ?? "");
+  setMeta(metaKeys.lastWohnungenFetchAt, state.lastWohnungenFetchAt ?? "");
+  setMeta(metaKeys.lastPlanungsprojekteFetchAt, state.lastPlanungsprojekteFetchAt ?? "");
+  setMeta(metaKeys.lastWillhabenFetchAt, state.lastWillhabenFetchAt ?? "");
+  setMeta(metaKeys.rateLimit, JSON.stringify(state.rateLimit ?? defaultState().rateLimit));
 };
 
 export const loadTelegramConfig = async (): Promise<TelegramConfig> => {
+  ensureDb();
+  const raw = getConfig(telegramConfigKey);
+  if (!raw) return defaultTelegramConfig();
   try {
-    const data = await fs.readFile(telegramConfigPath, "utf8");
-    return normalizeTelegramConfig(JSON.parse(data) as TelegramConfig);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return defaultTelegramConfig();
-    }
-    throw error;
+    return normalizeTelegramConfig(JSON.parse(raw) as TelegramConfig);
+  } catch {
+    return defaultTelegramConfig();
   }
 };
 
 export const saveTelegramConfig = async (config: TelegramConfig) => {
-  await fs.mkdir(path.dirname(telegramConfigPath), { recursive: true });
-  await fs.writeFile(telegramConfigPath, JSON.stringify(config, null, 2), "utf8");
+  ensureDb();
+  setConfig(telegramConfigKey, JSON.stringify(config));
 };
+
+export { defaultState };

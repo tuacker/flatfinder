@@ -5,8 +5,6 @@ export const planungsprojekteUrl = `${baseUrl}/?art=&page=planungsprojekte&p=1&s
 
 const dataDir = "data/wohnberatung";
 export const storageStatePath = `${dataDir}/storageState.json`;
-export const statePath = `${dataDir}/state.json`;
-export const telegramConfigPath = `${dataDir}/telegram.json`;
 export const assetsDir = `${dataDir}/assets`;
 
 export const planungsprojektePlzRange = {

@@ -2,6 +2,7 @@ import type {
   PlanungsprojektRecord,
   TelegramConfig,
   WohnungRecord,
+  WillhabenRecord,
 } from "./scrapers/wohnberatung/state.js";
 
 type TelegramRequestResult = {
@@ -217,11 +218,42 @@ const notifyTelegramForProjekt = async (config: TelegramConfig, item: Planungspr
   });
 };
 
+const notifyTelegramForWillhaben = async (config: TelegramConfig, item: WillhabenRecord) => {
+  const images = pickTelegramImages([...(item.detail?.images ?? []), item.thumbnailUrl]);
+  const costLines = item.costs
+    ? Object.entries(item.costs)
+        .filter(([label]) => label !== item.primaryCostLabel)
+        .map(([label, value]) => `${label}: ${value}`)
+    : [];
+  const primaryLine =
+    item.primaryCost && item.primaryCostLabel
+      ? `${item.primaryCostLabel}: ${item.primaryCost}`
+      : null;
+  const text = formatTelegramText({
+    title: item.title ?? item.location ?? "Willhaben listing",
+    url: item.url ?? null,
+    lines: [
+      item.location ? `Location: ${item.location}` : null,
+      item.size ? `Size: ${item.size}` : null,
+      item.rooms ? `Rooms: ${item.rooms}` : null,
+      primaryLine,
+      ...costLines,
+    ],
+    links: item.detail?.mapUrl ? [{ label: "Map", url: item.detail.mapUrl }] : [],
+  });
+  return await sendTelegramNotification({
+    config,
+    text,
+    images,
+  });
+};
+
 export const notifyTelegramNewItems = async (
   config: TelegramConfig | undefined,
   options: {
     wohnungen: WohnungRecord[];
     planungsprojekte: PlanungsprojektRecord[];
+    willhaben: WillhabenRecord[];
   },
 ) => {
   if (!config?.enabled || !config.botToken || !config.chatId) return;
@@ -239,4 +271,5 @@ export const notifyTelegramNewItems = async (
 
   await notifyList(options.wohnungen, (item) => notifyTelegramForWohnung(config, item));
   await notifyList(options.planungsprojekte, (item) => notifyTelegramForProjekt(config, item));
+  await notifyList(options.willhaben, (item) => notifyTelegramForWillhaben(config, item));
 };

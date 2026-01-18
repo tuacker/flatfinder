@@ -4,16 +4,10 @@ import path from "node:path";
 import {
   assetsDir,
   baseUrl,
-  planungsprojekteIntervalMinutes,
   rateLimitMonthly,
   storageStatePath,
-  wohnungssucheIntervalMinutes,
 } from "./scrapers/wohnberatung/config.js";
-import {
-  createRateLimiter,
-  scrapePlanungsprojekte,
-  scrapeWohnungen,
-} from "./scrapers/wohnberatung/wohnberatung-service.js";
+import { createRateLimiter } from "./scrapers/wohnberatung/wohnberatung-service.js";
 import {
   loadState,
   saveState,
@@ -24,16 +18,18 @@ import {
   type TelegramConfig,
 } from "./scrapers/wohnberatung/state.js";
 import { getNextRefreshFallback, renderFragments, renderPage } from "../ui/render.js";
-import {
-  fetchTelegramUpdates,
-  notifyTelegramNewItems,
-  sendTelegramMessage,
-  telegramRequest,
-} from "./telegram.js";
+import { fetchTelegramUpdates, sendTelegramMessage, telegramRequest } from "./telegram.js";
+import { createSerialQueue } from "./runtime/scheduler.js";
+import { registerScraperJobs } from "./runtime/scraper-jobs.js";
+import { comparePriority, sortByPriority } from "./shared/interest-priority.js";
 
 const port = 3000;
 
-const nextRefresh = { wohnungen: 0, planungsprojekte: 0 };
+const nextRefresh: Record<"wohnungen" | "planungsprojekte" | "willhaben", number> = {
+  wohnungen: 0,
+  planungsprojekte: 0,
+  willhaben: 0,
+};
 
 type StorageStateCookie = {
   name: string;
@@ -106,41 +102,9 @@ const getCollection = (state: Awaited<ReturnType<typeof loadState>>, type: strin
     ? state.wohnungen
     : type === "planungsprojekte"
       ? state.planungsprojekte
-      : null;
-
-const getRequestedAtValue = (value: string | null | undefined) => {
-  if (!value) return Number.NEGATIVE_INFINITY;
-  const timestamp = new Date(value).getTime();
-  return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
-};
-
-const getPriority = (item: {
-  interest?: { rank?: number | null; requestedAt?: string | null };
-}) => {
-  const rank = item.interest?.rank;
-  if (typeof rank === "number") {
-    return { bucket: 0, value: rank };
-  }
-  return { bucket: 1, value: getRequestedAtValue(item.interest?.requestedAt) };
-};
-
-const comparePriority = (
-  left: { interest?: { rank?: number | null; requestedAt?: string | null } },
-  right: { interest?: { rank?: number | null; requestedAt?: string | null } },
-) => {
-  const leftPriority = getPriority(left);
-  const rightPriority = getPriority(right);
-  if (leftPriority.bucket !== rightPriority.bucket) {
-    return leftPriority.bucket - rightPriority.bucket;
-  }
-  if (leftPriority.value < rightPriority.value) return -1;
-  if (leftPriority.value > rightPriority.value) return 1;
-  return 0;
-};
-
-const sortByPriority = <T extends { interest?: { rank?: number | null; requestedAt?: string } }>(
-  items: T[],
-) => [...items].sort(comparePriority);
+      : type === "willhaben"
+        ? state.willhaben
+        : null;
 
 const isLocked = (item: {
   flags?: { angemeldet?: boolean };
@@ -345,69 +309,20 @@ const fillOpenSlots = async (options: {
 };
 
 const getNextRefreshAt = () => {
-  const scheduled = [nextRefresh.wohnungen, nextRefresh.planungsprojekte].filter(
-    (value) => value > 0,
-  );
+  const scheduled = [
+    nextRefresh.wohnungen,
+    nextRefresh.planungsprojekte,
+    nextRefresh.willhaben,
+  ].filter((value) => value > 0);
   return scheduled.length ? Math.min(...scheduled) : 0;
 };
 
 const getNextRefreshAtWithFallback = () => getNextRefreshAt() || getNextRefreshFallback();
 
-let queue = Promise.resolve();
-let interestQueue = Promise.resolve();
 let scheduleInterestRefresh: () => void = () => {};
 
-const runExclusive = (name: string, job: () => Promise<void>) => {
-  queue = queue
-    .catch(() => undefined)
-    .then(async () => {
-      try {
-        await job();
-      } catch (error) {
-        console.error(`[${name}]`, error instanceof Error ? error.message : error);
-      }
-    });
-  return queue;
-};
-
-const runInterestExclusive = (name: string, job: () => Promise<void>) => {
-  interestQueue = interestQueue
-    .catch(() => undefined)
-    .then(async () => {
-      try {
-        await job();
-      } catch (error) {
-        console.error(`[${name}]`, error instanceof Error ? error.message : error);
-      }
-    });
-  return interestQueue;
-};
-
-const scheduleJob = (
-  name: "wohnungssuche" | "planungsprojekte",
-  intervalMs: number,
-  job: () => Promise<void>,
-  onSchedule: (nextAt: number) => void,
-) => {
-  let pending = false;
-
-  const run = () => {
-    if (pending) return;
-    pending = true;
-    const nextAt = Date.now() + intervalMs;
-    onSchedule(nextAt);
-    void runExclusive(name, async () => {
-      try {
-        await job();
-      } finally {
-        pending = false;
-      }
-    });
-  };
-
-  void run();
-  setInterval(run, intervalMs);
-};
+const runExclusive = createSerialQueue();
+const runInterestExclusive = createSerialQueue();
 
 const ensureStorageState = async () => {
   try {
@@ -419,9 +334,11 @@ const ensureStorageState = async () => {
   }
 };
 
+let state: Awaited<ReturnType<typeof loadState>>;
+
 const main = async () => {
   await ensureStorageState();
-  const state = await loadState();
+  state = await loadState();
   let telegramConfig = await loadTelegramConfig();
 
   const app = express();
@@ -976,6 +893,11 @@ const main = async () => {
     const confirm =
       (req.body as { action?: string; confirm?: boolean } | undefined)?.confirm ?? false;
 
+    if (type === "willhaben") {
+      res.status(400).json({ ok: false, message: "Interest is not supported for Willhaben." });
+      return;
+    }
+
     if (!id || !action) {
       res.status(400).json({ ok: false, message: "Missing action or id." });
       return;
@@ -1176,43 +1098,18 @@ const main = async () => {
   scheduleInterestRefresh();
   scheduleTelegramPolling();
 
-  scheduleJob(
-    "wohnungssuche",
-    wohnungssucheIntervalMinutes * 60 * 1000,
-    async () => {
-      await scrapeWohnungen(state, rateLimiter);
-      await notifyTelegramNewItems(ensureTelegramConfig(), {
-        wohnungen: state.wohnungen,
-        planungsprojekte: [],
-      });
-      const now = nowIso();
-      state.lastScrapeAt = now;
-      await persistState(now);
-    },
-    (nextAt) => {
-      nextRefresh.wohnungen = nextAt;
+  registerScraperJobs({
+    state,
+    rateLimiter,
+    runExclusive,
+    nowIso,
+    persistState,
+    getTelegramConfig: ensureTelegramConfig,
+    onSchedule: (key, nextAt) => {
+      nextRefresh[key] = nextAt;
       notifyClients();
     },
-  );
-
-  scheduleJob(
-    "planungsprojekte",
-    planungsprojekteIntervalMinutes * 60 * 1000,
-    async () => {
-      await scrapePlanungsprojekte(state, rateLimiter);
-      await notifyTelegramNewItems(ensureTelegramConfig(), {
-        wohnungen: [],
-        planungsprojekte: state.planungsprojekte,
-      });
-      const now = nowIso();
-      state.lastScrapeAt = now;
-      await persistState(now);
-    },
-    (nextAt) => {
-      nextRefresh.planungsprojekte = nextAt;
-      notifyClients();
-    },
-  );
+  });
 };
 
 void main();
