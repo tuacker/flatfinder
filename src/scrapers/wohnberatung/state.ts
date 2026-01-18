@@ -52,6 +52,7 @@ export type WillhabenDetail = {
   costs?: Record<string, string>;
   primaryCost?: string | null;
   primaryCostLabel?: string | null;
+  sellerName?: string | null;
 };
 
 export type WillhabenRecord = {
@@ -61,6 +62,7 @@ export type WillhabenRecord = {
   address: string | null;
   postalCode: string | null;
   district: string | null;
+  sellerName?: string | null;
   url: string | null;
   thumbnailUrl?: string | null;
   images?: string[];
@@ -75,6 +77,7 @@ export type WillhabenRecord = {
   lastSeenAt: string;
   seenAt?: string | null;
   hiddenAt?: string | null;
+  suppressed?: boolean | null;
   detail?: WillhabenDetail;
   interest?: InterestInfo;
   telegramNotifiedAt?: string | null;

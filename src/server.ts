@@ -434,7 +434,7 @@ const main = async () => {
           await persistState(nowStamp);
         }
       } catch (error) {
-        console.error("[interest-refresh]", error instanceof Error ? error.message : error);
+        console.error("[interest-refresh]", error);
       } finally {
         interestRefreshRunning = false;
         scheduleInterestRefresh();
@@ -785,7 +785,11 @@ const main = async () => {
     if (action === "toggleSeen") {
       item.seenAt = item.seenAt ? null : now;
     } else if (action === "toggleHidden") {
-      item.hiddenAt = item.hiddenAt ? null : now;
+      const nextHiddenAt = item.hiddenAt ? null : now;
+      item.hiddenAt = nextHiddenAt;
+      if (nextHiddenAt && !item.seenAt) {
+        item.seenAt = now;
+      }
     } else {
       res.status(400).json({ error: "Unknown action." });
       return;
@@ -826,6 +830,9 @@ const main = async () => {
       const now = nowIso();
       if (action === "add") {
         if (!interest.requestedAt) interest.requestedAt = now;
+        if (!item.seenAt) {
+          item.seenAt = now;
+        }
       } else if (action === "drop") {
         interest.requestedAt = null;
       } else {
@@ -969,6 +976,9 @@ const main = async () => {
       if (!result.ok) {
         res.status(400).json(result);
         return;
+      }
+      if (!item.seenAt) {
+        item.seenAt = nowIso;
       }
       await persistState(nowIso);
       scheduleInterestRefresh();

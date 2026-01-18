@@ -124,11 +124,12 @@ const extractCosts = (attrs: WillhabenAttribute[]) => {
     const value = attr.values?.[0];
     if (!value) continue;
     const label = costLabelOverrides[attr.name] ?? humanizeCostLabel(attr.name);
+    const normalized = formatCurrencyValue(value) ?? value;
     if (!costs.has(label)) {
-      costs.set(label, value);
+      costs.set(label, normalized);
     }
     if (!primaryCost && costPrimaryOrder.includes(attr.name)) {
-      primaryCost = value;
+      primaryCost = normalized;
       primaryLabel = costLabelOverrides[attr.name] ?? label;
     }
   }
@@ -142,12 +143,33 @@ const extractCosts = (attrs: WillhabenAttribute[]) => {
 
 const parseCurrencyValue = (value: string | null | undefined) => {
   if (!value) return null;
-  const cleaned = value
-    .replace(/[^\d.,]/g, "")
-    .replace(/\./g, "")
-    .replace(",", ".");
-  const parsed = Number(cleaned);
+  if (/[a-zäöü]/i.test(value) && !/\b(eur|euro)\b/i.test(value)) {
+    return null;
+  }
+  const cleaned = value.replace(/[^\d.,]/g, "");
+  if (!cleaned) return null;
+  const hasComma = cleaned.includes(",");
+  const hasDot = cleaned.includes(".");
+  let normalized = cleaned;
+  if (hasComma && hasDot) {
+    const lastComma = cleaned.lastIndexOf(",");
+    const lastDot = cleaned.lastIndexOf(".");
+    if (lastComma > lastDot) {
+      normalized = cleaned.replace(/\./g, "").replace(",", ".");
+    } else {
+      normalized = cleaned.replace(/,/g, "");
+    }
+  } else if (hasComma) {
+    normalized = cleaned.replace(",", ".");
+  }
+  const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
+};
+
+const formatCurrencyValue = (value: string | null | undefined) => {
+  const numeric = parseCurrencyValue(value);
+  if (numeric === null) return null;
+  return new Intl.NumberFormat("de-AT", { style: "currency", currency: "EUR" }).format(numeric);
 };
 
 const pickTotalCostValue = (record: {
@@ -206,6 +228,35 @@ const containsExcludedKeyword = (value: string | null | undefined) => {
   return willhabenExcludedKeywords.some((keyword) => lowered.includes(keyword));
 };
 
+const containsAutoHideKeyword = (value: string | null | undefined) => {
+  if (!value) return false;
+  const lowered = value.toLowerCase();
+  if (willhabenExcludedKeywords.some((keyword) => lowered.includes(keyword))) return true;
+  return /vormerkschein/i.test(lowered);
+};
+
+const applyAutoHide = (record: WillhabenRecord, now: string) => {
+  if (record.hiddenAt) return;
+  const description = record.detail?.description ?? record.detail?.descriptionHtml ?? null;
+  if (!description) return;
+  if (containsAutoHideKeyword(description)) {
+    record.hiddenAt = now;
+  }
+};
+
+const containsBannedProvider = (value: string | null | undefined) =>
+  value ? /blueground/i.test(value) : false;
+
+const applySuppression = (record: WillhabenRecord, now: string) => {
+  if (record.suppressed) return;
+  const candidates = [record.sellerName, record.detail?.sellerName];
+  if (candidates.some((value) => containsBannedProvider(value))) {
+    record.suppressed = true;
+    record.hiddenAt = record.hiddenAt ?? now;
+    record.seenAt = record.seenAt ?? now;
+  }
+};
+
 const parseSummary = (
   summary: WillhabenSummary,
   existing: Map<string, WillhabenRecord>,
@@ -248,13 +299,17 @@ const parseSummary = (
     summary.advertImageList?.advertImage?.[0]?.thumbnailImageUrl ?? images[0] ?? null;
 
   const costsSummary = extractCosts(attrs);
+  const mergedCosts =
+    costsSummary.costs && Object.keys(costsSummary.costs).length > 0
+      ? costsSummary.costs
+      : (previous?.costs ?? {});
+  const primaryCost = costsSummary.primaryCost ?? previous?.primaryCost ?? null;
   const primaryCostLabel =
-    previous?.primaryCostLabel ??
-    costsSummary.primaryLabel ??
-    (costsSummary.primaryCost ? "Gesamtmiete" : null);
-  const totalCostValue =
-    previous?.totalCostValue ??
-    getTotalCostValue({ primaryCost: costsSummary.primaryCost, costs: costsSummary.costs });
+    costsSummary.primaryLabel ?? previous?.primaryCostLabel ?? (primaryCost ? "Gesamtmiete" : null);
+  const totalCostValue = getTotalCostValue({
+    primaryCost,
+    costs: mergedCosts,
+  });
 
   return {
     id,
@@ -263,20 +318,22 @@ const parseSummary = (
     address,
     postalCode,
     district,
+    sellerName: previous?.sellerName ?? null,
     url,
     thumbnailUrl,
     images,
     size,
     rooms,
     publishedAt,
-    costs: previous?.costs ?? costsSummary.costs,
-    primaryCost: previous?.primaryCost ?? costsSummary.primaryCost,
+    costs: mergedCosts,
+    primaryCost,
     primaryCostLabel,
     totalCostValue,
     firstSeenAt: previous?.firstSeenAt ?? now,
     lastSeenAt: now,
     seenAt: previous?.seenAt ?? null,
     hiddenAt: previous?.hiddenAt ?? null,
+    suppressed: previous?.suppressed ?? null,
     detail: previous?.detail,
     interest: previous?.interest,
     telegramNotifiedAt: previous?.telegramNotifiedAt ?? null,
@@ -310,6 +367,14 @@ const fetchDetail = async (record: WillhabenRecord): Promise<WillhabenDetail | n
     getAttributeValue(attrs, "DESCRIPTION") ?? getAttributeValue(attrs, "BODY_DYN");
   const description = normalizeDescription(descriptionRaw);
   const coordinates = normalizeText(getAttributeValue(attrs, "COORDINATES"));
+  const contactName = normalizeText(getAttributeValue(attrs, "CONTACT/NAME"));
+  const contactCompany = normalizeText(getAttributeValue(attrs, "CONTACT/COMPANY"));
+  const sellerProfile = details.sellerProfileUserData;
+  const sellerProfileName =
+    typeof sellerProfile === "string"
+      ? normalizeText(sellerProfile)
+      : normalizeText(sellerProfile?.name);
+  const sellerName = sellerProfileName ?? contactCompany ?? contactName ?? null;
   const images =
     details.advertImageList?.advertImage
       ?.map((img) => img.mainImageUrl ?? null)
@@ -325,6 +390,7 @@ const fetchDetail = async (record: WillhabenRecord): Promise<WillhabenDetail | n
     costs: costs.costs,
     primaryCost: costs.primaryCost,
     primaryCostLabel: costs.primaryLabel,
+    sellerName,
   };
 };
 
@@ -334,6 +400,9 @@ const applyDetail = (record: WillhabenRecord, detail: WillhabenDetail | null) =>
   if (detail.images?.length) {
     record.images = detail.images;
     record.thumbnailUrl = detail.images[0] ?? record.thumbnailUrl;
+  }
+  if (detail.sellerName) {
+    record.sellerName = detail.sellerName;
   }
   if (detail.costs && Object.keys(detail.costs).length > 0) {
     record.costs = detail.costs;
@@ -386,20 +455,23 @@ const buildRecords = async (
         const item = queue.shift();
         if (!item) continue;
         const detail = await fetchDetail(item);
-        if (detail?.description && containsExcludedKeyword(detail.description)) {
-          const index = merged.findIndex((entry) => entry.id === item.id);
-          if (index >= 0) merged.splice(index, 1);
-          continue;
-        }
         applyDetail(item, detail);
         if (isOverMaxCost(item)) {
           const index = merged.findIndex((entry) => entry.id === item.id);
           if (index >= 0) merged.splice(index, 1);
+          continue;
         }
+        applyAutoHide(item, now);
+        applySuppression(item, now);
       }
     });
     await Promise.all(workers);
   }
+
+  merged.forEach((record) => {
+    applyAutoHide(record, now);
+    applySuppression(record, now);
+  });
 
   return merged;
 };

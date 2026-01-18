@@ -445,8 +445,8 @@ const renderWohnungRow = (item: WohnungRecord, options: RenderRowOptions = {}) =
         <div class="facts">
           <div class="fact"><span class="label">Fläche:</span><span class="value">${safeValue(item.size)}</span></div>
           <div class="fact"><span class="label">Zimmer:</span><span class="value">${safeValue(cleanValue(item.rooms))}</span></div>
-          <div class="fact"><span class="label">Kosten:</span><span class="value">${safeValue(cleanValue(item.monthlyCost))}</span></div>
-          <div class="fact"><span class="label">Eigenmittel:</span><span class="value">${safeValue(cleanValue(item.equity))}</span></div>
+          <div class="fact"><span class="label">Kosten:</span><span class="value">${safeValue(formatCurrency(cleanValue(item.monthlyCost)) ?? cleanValue(item.monthlyCost))}</span></div>
+          <div class="fact"><span class="label">Eigenmittel:</span><span class="value">${safeValue(formatCurrency(cleanValue(item.equity)) ?? cleanValue(item.equity))}</span></div>
           <div class="fact"><span class="label">Typ:</span><span class="value">${safeValue(item.foerderungstyp)}</span></div>
         </div>
       </div>
@@ -493,8 +493,7 @@ const renderWillhabenRow = (item: WillhabenRecord) => {
 
   const primaryLabel = item.primaryCostLabel ?? (item.primaryCost ? "Gesamtmiete" : null);
   const totalCost =
-    formatCurrency(item.totalCostValue ?? item.primaryCost) ??
-    (item.primaryCost ? `€ ${safeValue(item.primaryCost)}` : null);
+    formatCurrency(item.totalCostValue ?? null) ?? (item.primaryCost ? item.primaryCost : null);
   const totalLabel = "Gesamtbelastung";
   const additionalCostLabels = [
     "Betriebskosten",
@@ -507,9 +506,7 @@ const renderWillhabenRow = (item: WillhabenRecord) => {
     additionalCostLabels
       .map((label) => ({ label, value: item.costs?.[label] }))
       .find((entry) => entry.value)?.value ?? null;
-  const additionalCost =
-    formatCurrency(additionalCostEntry) ??
-    (additionalCostEntry ? `€ ${safeValue(additionalCostEntry)}` : null);
+  const additionalCost = additionalCostEntry ? additionalCostEntry : null;
   const summaryFacts = [
     item.size
       ? `<div class="fact"><span class="label">Fläche:</span><span class="value">${safeValue(item.size)} m²</span></div>`
@@ -780,7 +777,7 @@ const buildSections = (
   const hiddenPlanungsprojekte = state.planungsprojekte.filter((item) => item.hiddenAt);
   const activeWillhabenFilters = willhabenFilters ?? defaultWillhabenFilters();
   const visibleWillhaben = state.willhaben.filter(
-    (item) => !item.hiddenAt && !item.interest?.requestedAt,
+    (item) => !item.hiddenAt && !item.interest?.requestedAt && !item.suppressed,
   );
   const filteredWillhaben = visibleWillhaben.filter((item) => {
     const districtCode =
@@ -815,7 +812,7 @@ const buildSections = (
       activeWillhabenFilters.sortDir === "desc" ? comparator(b, a) : comparator(a, b),
     );
   }
-  const hiddenWillhaben = state.willhaben.filter((item) => item.hiddenAt);
+  const hiddenWillhaben = state.willhaben.filter((item) => item.hiddenAt && !item.suppressed);
 
   const wohnungen = sortSeenLast(visibleWohnungen).map((item) =>
     renderWohnungRow(item, { showCountdown: true }),
@@ -869,7 +866,9 @@ const buildSections = (
   const planungsprojekteCount = planungsprojekte.length;
   const willhabenCount = willhaben.length;
   const interestedWillhaben = sortSeenLast(
-    state.willhaben.filter((item) => !item.hiddenAt && item.interest?.requestedAt),
+    state.willhaben.filter(
+      (item) => !item.hiddenAt && item.interest?.requestedAt && !item.suppressed,
+    ),
   ).map((item) => renderWillhabenRow(item));
 
   const interestedSection = `

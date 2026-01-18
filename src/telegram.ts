@@ -336,5 +336,8 @@ export const notifyTelegramNewItems = async (
 
   await notifyList(options.wohnungen, (item) => notifyTelegramForWohnung(config, item));
   await notifyList(options.planungsprojekte, (item) => notifyTelegramForProjekt(config, item));
-  await notifyList(options.willhaben, (item) => notifyTelegramForWillhaben(config, item));
+  await notifyList(
+    options.willhaben.filter((item) => !item.suppressed),
+    (item) => notifyTelegramForWillhaben(config, item),
+  );
 };
