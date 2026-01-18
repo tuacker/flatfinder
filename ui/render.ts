@@ -15,13 +15,17 @@ import { formatRefreshLeft, formatTimeLeft } from "./time.js";
 
 export type RenderOptions = {
   nextRefreshAt: number;
+  wohnberatungNextRefreshAt: number;
+  willhabenNextRefreshAt: number;
   sourceFilter?: SourceFilter;
+  willhabenFilters?: WillhabenFilters;
 };
 
 export type RenderFragments = {
   updatedAt: string | null;
   lastScrapeAt: string | null;
-  nextRefreshAt: number;
+  wohnberatungNextRefreshAt: number;
+  willhabenNextRefreshAt: number;
   rateLimitCount: number;
   rateLimitMonthly: number;
   sections: {
@@ -32,13 +36,24 @@ export type RenderFragments = {
     willhaben: string;
     settings: string;
   };
-  willhaben: {
-    districts: string[];
-    rooms: string[];
-  };
 };
 
 type SourceFilter = "all" | "wohnberatung" | "willhaben";
+export type WillhabenSortKey = "price" | "area" | null;
+export type WillhabenSortDir = "asc" | "desc" | null;
+export type WillhabenFilters = {
+  sortKey: WillhabenSortKey;
+  sortDir: WillhabenSortDir;
+  districts: string[];
+  rooms: string[];
+};
+
+const defaultWillhabenFilters = (): WillhabenFilters => ({
+  sortKey: null,
+  sortDir: null,
+  districts: [],
+  rooms: [],
+});
 
 const escapeHtml = (value: string | number | null | undefined) =>
   String(value ?? "")
@@ -52,6 +67,29 @@ const safeValue = (value: string | number | null | undefined, fallback = "-") =>
   escapeHtml(value ?? fallback);
 
 const safeAttribute = (value: string | number | null | undefined) => escapeHtml(value ?? "");
+
+const sanitizeDescriptionHtml = (html: string) => {
+  const tokens: Array<{ token: string; tag: string }> = [];
+  const addToken = (tag: string) => {
+    const token = `__TAG_${tokens.length}__`;
+    tokens.push({ token, tag });
+    return token;
+  };
+
+  let safe = html;
+  safe = safe.replace(/<\s*br\s*\/?\s*>/gi, () => addToken("<br />"));
+  safe = safe.replace(/<\s*(\/?)\s*(p|strong|b|em|ul|ol|li|h3|h4)[^>]*>/gi, (_match, close, tag) =>
+    addToken(`<${close ? "/" : ""}${tag.toLowerCase()}>`),
+  );
+
+  safe = escapeHtml(safe);
+
+  tokens.forEach(({ token, tag }) => {
+    safe = safe.replaceAll(token, tag);
+  });
+
+  return safe;
+};
 
 const cleanValue = (value: string | null) => {
   if (!value) return "-";
@@ -454,6 +492,8 @@ const renderWillhabenRow = (item: WillhabenRecord) => {
   const seenButton = !isSeen
     ? `<button class="seen-toggle js-entry-action" data-action="toggleSeen" data-type="willhaben" data-id="${safeAttribute(item.id)}" aria-label="Mark seen">✓</button>`
     : "";
+  const isInterested = Boolean(item.interest?.requestedAt);
+  const interestButton = `<button class="btn ${isInterested ? "btn-muted" : "btn-success"} js-interest-action" data-action="${isInterested ? "drop" : "add"}" data-type="willhaben" data-id="${safeAttribute(item.id)}">${isInterested ? "Drop" : "Interested"}</button>`;
   const entryActions = `
         <button class="btn btn-muted js-entry-action" data-action="toggleHidden" data-type="willhaben" data-id="${safeAttribute(item.id)}" aria-label="${isHidden ? "Unhide" : "Hide"}">${visibilityLabel}</button>
       `;
@@ -504,14 +544,17 @@ const renderWillhabenRow = (item: WillhabenRecord) => {
     mapEmbed || item.detail?.description
       ? `<button class="btn js-toggle-map" data-target="${mapId}">Details</button>`
       : "";
-  const description = item.detail?.description
-    ? `<div class="details-text">${escapeHtml(item.detail.description).replace(/\n/g, "<br />")}</div>`
+  const rawDescription = item.detail?.descriptionHtml ?? item.detail?.description ?? null;
+  const description = rawDescription
+    ? `<div class="details-text">${sanitizeDescriptionHtml(rawDescription).replace(/\n/g, "<br />")}</div>`
     : "";
   const mapSection =
     detailsToggle && (mapEmbed || description)
-      ? `<div id="${mapId}" class="map-container is-hidden">
-         ${mapEmbed ? `<iframe src="${safeAttribute(mapEmbed)}" loading="lazy" allowfullscreen></iframe>` : ""}
-         ${mapUrl ? `<a class="btn btn-primary" href="${safeAttribute(mapUrl)}" target="_blank">Google Maps ↗</a>` : ""}
+      ? `<div id="${mapId}" class="map-container willhaben-details is-hidden">
+         <div class="details-map">
+           ${mapEmbed ? `<iframe src="${safeAttribute(mapEmbed)}" loading="lazy" allowfullscreen></iframe>` : ""}
+           ${mapUrl ? `<a class="btn btn-primary" href="${safeAttribute(mapUrl)}" target="_blank">Google Maps ↗</a>` : ""}
+         </div>
          ${description}
        </div>`
       : "";
@@ -530,6 +573,9 @@ const renderWillhabenRow = (item: WillhabenRecord) => {
             <div class="title">${safeValue(titleText)}</div>
           </div>
           <div class="row-header-actions">
+            <div class="row-header-interest">
+              ${interestButton}
+            </div>
             <div class="actions">
               ${detailsToggle}
               ${entryActions}
@@ -629,32 +675,32 @@ const renderTelegramSettings = (config: TelegramConfig | null | undefined) => {
   `;
 };
 
-const renderWillhabenControls = (options: { districts: string[] }) => `
+const renderWillhabenControls = (options: { districts: string[]; filters: WillhabenFilters }) => `
   <div class="willhaben-controls" id="willhaben-controls">
     <div class="filter-group">
       <span class="filter-label">Sort</span>
-      <button class="filter-chip js-sort-chip" data-sort="price" data-sort-state="none">Price</button>
-      <button class="filter-chip js-sort-chip" data-sort="area" data-sort-state="none">Fläche</button>
+      <button class="filter-chip js-sort-chip${options.filters.sortKey === "price" && options.filters.sortDir ? " is-active" : ""}" data-sort="price" data-sort-state="${options.filters.sortKey === "price" ? (options.filters.sortDir ?? "none") : "none"}">Price</button>
+      <button class="filter-chip js-sort-chip${options.filters.sortKey === "area" && options.filters.sortDir ? " is-active" : ""}" data-sort="area" data-sort-state="${options.filters.sortKey === "area" ? (options.filters.sortDir ?? "none") : "none"}">Fläche</button>
     </div>
     <div class="filter-group">
       <span class="filter-label">District</span>
-      <button class="filter-chip js-filter-district" data-value="all">All</button>
+      <button class="filter-chip js-filter-district${options.filters.districts.length === 0 ? " is-active" : ""}" data-value="all">All</button>
       ${options.districts
-        .map(
-          (district) =>
-            `<button class="filter-chip js-filter-district" data-value="${escapeHtml(
-              district,
-            )}">${escapeHtml(district)}.</button>`,
-        )
+        .map((district) => {
+          const active = options.filters.districts.includes(district);
+          return `<button class="filter-chip js-filter-district${active ? " is-active" : ""}" data-value="${escapeHtml(
+            district,
+          )}">${escapeHtml(district)}.</button>`;
+        })
         .join("")}
     </div>
     <div class="filter-group">
       <span class="filter-label">Rooms</span>
-      <button class="filter-chip js-filter-rooms" data-value="all">All</button>
-      <button class="filter-chip js-filter-rooms" data-value="1">1</button>
-      <button class="filter-chip js-filter-rooms" data-value="2">2</button>
-      <button class="filter-chip js-filter-rooms" data-value="3">3</button>
-      <button class="filter-chip js-filter-rooms" data-value="4+">4+</button>
+      <button class="filter-chip js-filter-rooms${options.filters.rooms.length === 0 ? " is-active" : ""}" data-value="all">All</button>
+      <button class="filter-chip js-filter-rooms${options.filters.rooms.includes("1") ? " is-active" : ""}" data-value="1">1</button>
+      <button class="filter-chip js-filter-rooms${options.filters.rooms.includes("2") ? " is-active" : ""}" data-value="2">2</button>
+      <button class="filter-chip js-filter-rooms${options.filters.rooms.includes("3") ? " is-active" : ""}" data-value="3">3</button>
+      <button class="filter-chip js-filter-rooms${options.filters.rooms.includes("4+") ? " is-active" : ""}" data-value="4+">4+</button>
     </div>
   </div>
 `;
@@ -674,14 +720,21 @@ const renderSubsection = (
   options?: { controls?: string },
 ) => {
   const content = items.length ? items.join("\n") : '<div class="empty">No entries</div>';
+  const showRank = type === "wohnungen" || type === "planungsprojekte";
   return `
-    <div class="subsection">
+    <div class="subsection" data-type="${safeAttribute(type)}">
       <div class="subsection-header">
         <h3>${escapeHtml(title)}</h3>
         <div class="subsection-actions">
+          ${
+            showRank
+              ? `
           <button class="btn btn-muted js-rank-toggle" data-type="${type}" data-target="${listId}">Reorder</button>
           <button class="btn btn-primary js-rank-save is-hidden" data-type="${type}" data-target="${listId}">Save</button>
           <button class="btn btn-muted js-rank-cancel is-hidden" data-type="${type}" data-target="${listId}">Cancel</button>
+          `
+              : ""
+          }
         </div>
       </div>
       ${options?.controls ?? ""}
@@ -710,7 +763,11 @@ const sortByRank = <
     return b.lastSeenAt.localeCompare(a.lastSeenAt);
   });
 
-const buildSections = (state: FlatfinderState, telegramConfig?: TelegramConfig | null) => {
+const buildSections = (
+  state: FlatfinderState,
+  telegramConfig?: TelegramConfig | null,
+  willhabenFilters?: WillhabenFilters,
+) => {
   const isInterested = (item: {
     flags: { angemeldet: boolean };
     interest?: { requestedAt?: string | null };
@@ -728,7 +785,43 @@ const buildSections = (state: FlatfinderState, telegramConfig?: TelegramConfig |
   );
   const hiddenWohnungen = state.wohnungen.filter((item) => item.hiddenAt);
   const hiddenPlanungsprojekte = state.planungsprojekte.filter((item) => item.hiddenAt);
-  const visibleWillhaben = state.willhaben.filter((item) => !item.hiddenAt);
+  const activeWillhabenFilters = willhabenFilters ?? defaultWillhabenFilters();
+  const visibleWillhaben = state.willhaben.filter(
+    (item) => !item.hiddenAt && !item.interest?.requestedAt,
+  );
+  const filteredWillhaben = visibleWillhaben.filter((item) => {
+    const districtCode =
+      extractDistrictCode(item.district ?? null) ??
+      extractDistrictCode(item.location ?? null) ??
+      "";
+    if (activeWillhabenFilters.districts.length > 0) {
+      if (!activeWillhabenFilters.districts.includes(districtCode)) return false;
+    }
+    if (activeWillhabenFilters.rooms.length > 0) {
+      const roomsValue = parseNumeric(item.rooms)?.toString() ?? "";
+      if (!roomsValue) return false;
+      const roomsCount = Number(roomsValue);
+      const matches = activeWillhabenFilters.rooms.some((value) => {
+        if (value === "4+") return Number.isFinite(roomsCount) && roomsCount >= 4;
+        return roomsValue === value;
+      });
+      if (!matches) return false;
+    }
+    return true;
+  });
+  const sortedWillhaben = [...filteredWillhaben];
+  if (activeWillhabenFilters.sortKey && activeWillhabenFilters.sortDir) {
+    const comparator =
+      activeWillhabenFilters.sortKey === "price"
+        ? (a: WillhabenRecord, b: WillhabenRecord) =>
+            (a.totalCostValue ?? parseCurrency(a.primaryCost) ?? Infinity) -
+            (b.totalCostValue ?? parseCurrency(b.primaryCost) ?? Infinity)
+        : (a: WillhabenRecord, b: WillhabenRecord) =>
+            (parseNumeric(a.size) ?? Infinity) - (parseNumeric(b.size) ?? Infinity);
+    sortedWillhaben.sort((a, b) =>
+      activeWillhabenFilters.sortDir === "desc" ? comparator(b, a) : comparator(a, b),
+    );
+  }
   const hiddenWillhaben = state.willhaben.filter((item) => item.hiddenAt);
 
   const wohnungen = sortSeenLast(visibleWohnungen).map((item) =>
@@ -737,7 +830,7 @@ const buildSections = (state: FlatfinderState, telegramConfig?: TelegramConfig |
   const planungsprojekte = sortSeenLast(visiblePlanungsprojekte).map((item) =>
     renderPlanungsprojektRow(item, { showCountdown: true }),
   );
-  const willhaben = sortSeenLast(visibleWillhaben).map((item) => renderWillhabenRow(item));
+  const willhaben = sortSeenLast(sortedWillhaben).map((item) => renderWillhabenRow(item));
   const willhabenDistricts = Array.from(
     new Set(
       state.willhaben
@@ -782,6 +875,10 @@ const buildSections = (state: FlatfinderState, telegramConfig?: TelegramConfig |
   const wohnungenCount = wohnungen.length;
   const planungsprojekteCount = planungsprojekte.length;
   const willhabenCount = willhaben.length;
+  const interestedWillhaben = sortSeenLast(
+    state.willhaben.filter((item) => !item.hiddenAt && item.interest?.requestedAt),
+  ).map((item) => renderWillhabenRow(item));
+
   const interestedSection = `
     <div class="section" id="interested-section" data-view-group="interested">
       <h2>Interested</h2>
@@ -797,11 +894,18 @@ const buildSections = (state: FlatfinderState, telegramConfig?: TelegramConfig |
         "interested-planungsprojekte-list",
         interestedPlanungsprojekteRows,
       )}
+      ${renderSubsection(
+        `Willhaben (${interestedWillhaben.length})`,
+        "willhaben",
+        "interested-willhaben-list",
+        interestedWillhaben,
+      )}
     </div>
   `;
 
   const willhabenControls = renderWillhabenControls({
     districts: willhabenDistricts,
+    filters: activeWillhabenFilters,
   });
 
   return {
@@ -841,11 +945,12 @@ export const renderFragments = (
   options: RenderOptions,
   telegramConfig?: TelegramConfig | null,
 ): RenderFragments => {
-  const sections = buildSections(state, telegramConfig);
+  const sections = buildSections(state, telegramConfig, options.willhabenFilters);
   return {
     updatedAt: state.updatedAt ?? null,
     lastScrapeAt: state.lastScrapeAt ?? null,
-    nextRefreshAt: options.nextRefreshAt,
+    wohnberatungNextRefreshAt: options.wohnberatungNextRefreshAt,
+    willhabenNextRefreshAt: options.willhabenNextRefreshAt,
     rateLimitCount: state.rateLimit.count,
     rateLimitMonthly,
     sections: {
@@ -856,21 +961,6 @@ export const renderFragments = (
       willhaben: sections.willhabenSection,
       settings: sections.settingsSection,
     },
-    willhaben: {
-      districts: Array.from(
-        new Set(
-          state.willhaben
-            .map(
-              (item) =>
-                extractDistrictCode(item.district ?? null) ??
-                extractDistrictCode(item.location ?? null) ??
-                null,
-            )
-            .filter((value): value is string => Boolean(value && value.trim())),
-        ),
-      ).sort((a, b) => Number(a) - Number(b)),
-      rooms: [],
-    },
   };
 };
 
@@ -880,7 +970,7 @@ export const renderPage = (
   telegramConfig?: TelegramConfig | null,
 ) => {
   const sourceFilter: SourceFilter = options.sourceFilter ?? "all";
-  const sections = buildSections(state, telegramConfig);
+  const sections = buildSections(state, telegramConfig, options.willhabenFilters);
 
   const updatedAt = state.updatedAt ?? "";
   const lastScrapeAt = state.lastScrapeAt ?? "";
@@ -895,7 +985,7 @@ export const renderPage = (
         <link rel="stylesheet" href="/app.css" />
         <script src="/app.js" type="module" defer></script>
       </head>
-      <body data-updated-at="${updatedAt}" data-last-scrape-at="${lastScrapeAt}" data-next-refresh="${options.nextRefreshAt}" data-view="root" data-source="${sourceFilter}">
+      <body data-updated-at="${updatedAt}" data-last-scrape-at="${lastScrapeAt}" data-next-refresh="${options.nextRefreshAt}" data-next-refresh-wohnberatung="${options.wohnberatungNextRefreshAt}" data-next-refresh-willhaben="${options.willhabenNextRefreshAt}" data-view="root" data-source="${sourceFilter}">
         <div class="header">
         <div class="header-row">
             <div class="header-title">
@@ -914,7 +1004,7 @@ export const renderPage = (
                 </svg>
               </button>
               <div class="status-line">
-                Last refresh: <span id="last-refresh" title="${lastScrapeAt || "-"}"></span>, next refresh: <span id="next-refresh"></span>, rate <span id="rate-count">${state.rateLimit.count}</span>/<span id="rate-limit">${rateLimitMonthly}</span>
+                Willhaben <span id="next-refresh-willhaben"></span> / WW <span id="next-refresh-wohnberatung"></span> &middot; <span id="rate-count">${state.rateLimit.count}</span>/<span id="rate-limit">${rateLimitMonthly}</span>
               </div>
             </div>
           </div>

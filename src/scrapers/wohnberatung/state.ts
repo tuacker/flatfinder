@@ -45,6 +45,7 @@ export type WohnungRecord = WohnungListItem & {
 
 export type WillhabenDetail = {
   description?: string | null;
+  descriptionHtml?: string | null;
   images?: string[];
   coordinates?: string | null;
   mapUrl?: string | null;
@@ -75,6 +76,7 @@ export type WillhabenRecord = {
   seenAt?: string | null;
   hiddenAt?: string | null;
   detail?: WillhabenDetail;
+  interest?: InterestInfo;
   telegramNotifiedAt?: string | null;
 };
 

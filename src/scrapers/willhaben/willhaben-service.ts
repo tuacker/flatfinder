@@ -278,6 +278,7 @@ const parseSummary = (
     seenAt: previous?.seenAt ?? null,
     hiddenAt: previous?.hiddenAt ?? null,
     detail: previous?.detail,
+    interest: previous?.interest,
     telegramNotifiedAt: previous?.telegramNotifiedAt ?? null,
   } satisfies WillhabenRecord;
 };
@@ -305,9 +306,9 @@ const fetchDetail = async (record: WillhabenRecord): Promise<WillhabenDetail | n
   if (!details) return null;
   const attrs = details.attributes?.attribute ?? [];
 
-  const description = normalizeDescription(
-    getAttributeValue(attrs, "DESCRIPTION") ?? getAttributeValue(attrs, "BODY_DYN"),
-  );
+  const descriptionRaw =
+    getAttributeValue(attrs, "DESCRIPTION") ?? getAttributeValue(attrs, "BODY_DYN");
+  const description = normalizeDescription(descriptionRaw);
   const coordinates = normalizeText(getAttributeValue(attrs, "COORDINATES"));
   const images =
     details.advertImageList?.advertImage
@@ -317,6 +318,7 @@ const fetchDetail = async (record: WillhabenRecord): Promise<WillhabenDetail | n
 
   return {
     description,
+    descriptionHtml: descriptionRaw ? String(descriptionRaw) : null,
     coordinates,
     images,
     mapUrl: buildMapUrl(coordinates, record.location),

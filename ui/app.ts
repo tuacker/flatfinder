@@ -46,19 +46,26 @@ const updateRefreshLabel = () => {
 };
 
 const updateNextRefreshLabel = () => {
-  const label = document.getElementById("next-refresh");
-  if (!label) return;
-  const nextAt = Number(document.body.getAttribute("data-next-refresh"));
-  if (!Number.isFinite(nextAt)) return;
-  const diffMs = nextAt - Date.now();
-  if (diffMs <= 0) {
-    label.textContent = "soon";
-    return;
+  const willhabenLabel = document.getElementById("next-refresh-willhaben");
+  const wohnberatungLabel = document.getElementById("next-refresh-wohnberatung");
+  const willhabenAt = Number(document.body.getAttribute("data-next-refresh-willhaben"));
+  const wohnberatungAt = Number(document.body.getAttribute("data-next-refresh-wohnberatung"));
+  if (willhabenLabel && Number.isFinite(willhabenAt)) {
+    willhabenLabel.textContent = formatRefreshLeft(new Date(willhabenAt).toISOString()) ?? "soon";
   }
-  const totalMinutes = Math.floor(diffMs / 60000);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  label.textContent = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+  if (wohnberatungLabel && Number.isFinite(wohnberatungAt)) {
+    const diffMs = wohnberatungAt - Date.now();
+    if (Number.isNaN(diffMs)) {
+      wohnberatungLabel.textContent = "soon";
+      return;
+    }
+    if (diffMs <= 0) {
+      wohnberatungLabel.textContent = "now";
+      return;
+    }
+    const minutes = Math.max(1, Math.ceil(diffMs / 60000));
+    wohnberatungLabel.textContent = `${minutes}m`;
+  }
 };
 
 const refreshDerivedUi = () => {
@@ -104,10 +111,6 @@ type SourceFilter = "all" | "wohnberatung" | "willhaben";
 type WillhabenSortKey = "price" | "area" | null;
 type WillhabenSortDir = "asc" | "desc" | null;
 let reorderActive = false;
-let willhabenSortKey: WillhabenSortKey = null;
-let willhabenSortDir: WillhabenSortDir = null;
-const willhabenDistricts = new Set<string>();
-const willhabenRooms = new Set<string>();
 
 const syncReorderActive = () => {
   reorderActive = Array.from(document.querySelectorAll<HTMLElement>(".list[data-rank-mode]")).some(
@@ -265,83 +268,47 @@ const updateHiddenCount = () => {
   if (label) label.textContent = String(count);
 };
 
-const getNumericData = (row: HTMLElement, key: string) => {
-  const raw = row.getAttribute(`data-${key}`);
-  if (!raw) return null;
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) ? parsed : null;
+type WillhabenUrlState = {
+  sortKey: WillhabenSortKey;
+  sortDir: WillhabenSortDir;
+  districts: string[];
+  rooms: string[];
 };
 
-const applyWillhabenFilters = () => {
-  const list = document.getElementById("willhaben-list");
-  if (!list) return;
-  const controls = document.getElementById("willhaben-controls");
-  const rows = Array.from(list.querySelectorAll<HTMLElement>(".row[data-type='willhaben']"));
-  if (controls) {
-    controls.querySelectorAll<HTMLButtonElement>(".js-sort-chip").forEach((button) => {
-      const key = button.dataset.sort as WillhabenSortKey | undefined;
-      if (!key) return;
-      const active = key === willhabenSortKey && willhabenSortDir !== null;
-      button.classList.toggle("is-active", active);
-      button.dataset.sortState = active ? (willhabenSortDir ?? "none") : "none";
-    });
-    controls.querySelectorAll<HTMLButtonElement>(".js-filter-district").forEach((button) => {
-      const value = button.dataset.value ?? "";
-      const active =
-        value === "all" ? willhabenDistricts.size === 0 : willhabenDistricts.has(value);
-      button.classList.toggle("is-active", active);
-    });
-    controls.querySelectorAll<HTMLButtonElement>(".js-filter-rooms").forEach((button) => {
-      const value = button.dataset.value ?? "";
-      const active = value === "all" ? willhabenRooms.size === 0 : willhabenRooms.has(value);
-      button.classList.toggle("is-active", active);
-    });
-  }
-
-  rows.forEach((row, index) => {
-    if (!row.dataset.order) row.dataset.order = String(index);
-  });
-
-  rows.forEach((row) => {
-    const district = row.getAttribute("data-district") ?? "";
-    const roomsValue = row.getAttribute("data-rooms") ?? "";
-    const roomsCount = Number(roomsValue);
-    let visible = true;
-    if (willhabenDistricts.size > 0 && !willhabenDistricts.has(district)) {
-      visible = false;
-    }
-    if (visible && willhabenRooms.size > 0) {
-      if (!Number.isFinite(roomsCount)) {
-        visible = false;
-      } else {
-        visible = Array.from(willhabenRooms).some((value) => {
-          if (value === "4+") return roomsCount >= 4;
-          return roomsValue === value;
-        });
-      }
-    }
-    row.style.display = visible ? "" : "none";
-    const mapSection = getMapSection(row);
-    if (mapSection) mapSection.style.display = visible ? "" : "none";
-  });
-
-  const sorters: Record<string, (a: HTMLElement, b: HTMLElement) => number> = {
-    price: (a, b) =>
-      (getNumericData(a, "price") ?? Infinity) - (getNumericData(b, "price") ?? Infinity),
-    area: (a, b) =>
-      (getNumericData(a, "area") ?? Infinity) - (getNumericData(b, "area") ?? Infinity),
+const readWillhabenStateFromUrl = (): WillhabenUrlState => {
+  const params = new URLSearchParams(window.location.search);
+  const sortKey = params.get("wh_sort");
+  const sortDir = params.get("wh_dir");
+  const districts = params.get("wh_districts");
+  const rooms = params.get("wh_rooms");
+  return {
+    sortKey: sortKey === "price" || sortKey === "area" ? sortKey : null,
+    sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : null,
+    districts: districts ? districts.split(",").filter(Boolean) : [],
+    rooms: rooms ? rooms.split(",").filter(Boolean) : [],
   };
-  const baseSorter =
-    willhabenSortKey && sorters[willhabenSortKey]
-      ? sorters[willhabenSortKey]
-      : (a: HTMLElement, b: HTMLElement) =>
-          Number(a.dataset.order ?? 0) - Number(b.dataset.order ?? 0);
-  const sorter =
-    willhabenSortDir === "desc" ? (a: HTMLElement, b: HTMLElement) => baseSorter(b, a) : baseSorter;
-  const sorted = [...rows].sort(sorter);
-  for (const row of sorted) {
-    moveRowWithMap(row, list, null);
+};
+
+const writeWillhabenStateToUrl = (state: WillhabenUrlState) => {
+  const url = new URL(window.location.href);
+  if (state.sortKey && state.sortDir) {
+    url.searchParams.set("wh_sort", state.sortKey);
+    url.searchParams.set("wh_dir", state.sortDir);
+  } else {
+    url.searchParams.delete("wh_sort");
+    url.searchParams.delete("wh_dir");
   }
+  if (state.districts.length) {
+    url.searchParams.set("wh_districts", state.districts.join(","));
+  } else {
+    url.searchParams.delete("wh_districts");
+  }
+  if (state.rooms.length) {
+    url.searchParams.set("wh_rooms", state.rooms.join(","));
+  } else {
+    url.searchParams.delete("wh_rooms");
+  }
+  window.history.pushState({}, "", url.toString());
 };
 
 const initWillhabenFilters = () => {
@@ -351,42 +318,48 @@ const initWillhabenFilters = () => {
     bindOnce(button, "boundSort", () => {
       const key = button.dataset.sort as WillhabenSortKey | undefined;
       if (!key) return;
-      if (willhabenSortKey !== key) {
-        willhabenSortKey = key;
-        willhabenSortDir = "asc";
-      } else if (willhabenSortDir === "asc") {
-        willhabenSortDir = "desc";
+      const state = readWillhabenStateFromUrl();
+      if (state.sortKey !== key) {
+        state.sortKey = key;
+        state.sortDir = "asc";
+      } else if (state.sortDir === "asc") {
+        state.sortDir = "desc";
       } else {
-        willhabenSortKey = null;
-        willhabenSortDir = null;
+        state.sortKey = null;
+        state.sortDir = null;
       }
-      applyWillhabenFilters();
+      writeWillhabenStateToUrl(state);
+      void refreshFromServer();
     });
   });
   controls.querySelectorAll<HTMLButtonElement>(".js-filter-district").forEach((button) => {
     bindOnce(button, "boundDistrict", () => {
       const value = button.dataset.value ?? "";
+      const state = readWillhabenStateFromUrl();
       if (value === "all") {
-        willhabenDistricts.clear();
-      } else if (willhabenDistricts.has(value)) {
-        willhabenDistricts.delete(value);
+        state.districts = [];
+      } else if (state.districts.includes(value)) {
+        state.districts = state.districts.filter((entry) => entry !== value);
       } else {
-        willhabenDistricts.add(value);
+        state.districts = [...state.districts, value];
       }
-      applyWillhabenFilters();
+      writeWillhabenStateToUrl(state);
+      void refreshFromServer();
     });
   });
   controls.querySelectorAll<HTMLButtonElement>(".js-filter-rooms").forEach((button) => {
     bindOnce(button, "boundRooms", () => {
       const value = button.dataset.value ?? "";
+      const state = readWillhabenStateFromUrl();
       if (value === "all") {
-        willhabenRooms.clear();
-      } else if (willhabenRooms.has(value)) {
-        willhabenRooms.delete(value);
+        state.rooms = [];
+      } else if (state.rooms.includes(value)) {
+        state.rooms = state.rooms.filter((entry) => entry !== value);
       } else {
-        willhabenRooms.add(value);
+        state.rooms = [...state.rooms, value];
       }
-      applyWillhabenFilters();
+      writeWillhabenStateToUrl(state);
+      void refreshFromServer();
     });
   });
 };
@@ -1074,7 +1047,6 @@ const initInteractiveElements = () => {
   initCarousel();
   initRankActions();
   initWillhabenFilters();
-  applyWillhabenFilters();
 };
 
 const initEntryActions = () => {
@@ -1245,13 +1217,10 @@ const initCarousel = () => {
 type FragmentPayload = {
   updatedAt: string | null;
   lastScrapeAt: string | null;
-  nextRefreshAt: number;
+  wohnberatungNextRefreshAt: number;
+  willhabenNextRefreshAt: number;
   rateLimitCount: number;
   rateLimitMonthly: number;
-  willhaben?: {
-    districts: string[];
-    rooms: string[];
-  };
   sections: {
     hidden: string;
     interested: string;
@@ -1263,42 +1232,91 @@ type FragmentPayload = {
 };
 
 let refreshPromise: Promise<void> | null = null;
+let refreshQueued = false;
 let settingsDirty = false;
 
-const replaceSection = (id: string, html: string) => {
+const normalizeMapState = (element: Element) => {
+  const clone = element.cloneNode(true) as HTMLElement;
+  clone.querySelectorAll(".map-container").forEach((node) => {
+    node.classList.add("is-hidden");
+  });
+  clone.querySelectorAll<HTMLElement>("[data-end]").forEach((node) => {
+    node.textContent = node.getAttribute("data-end") ?? "";
+  });
+  clone.querySelectorAll<HTMLElement>("[data-refresh-at]").forEach((node) => {
+    node.textContent = node.getAttribute("data-refresh-at") ?? "";
+  });
+  return clone;
+};
+
+const replaceSection = (id: string, html: string, openMapNodes: Map<string, HTMLElement>) => {
   const current = document.getElementById(id);
   if (!current) return;
   const wrapper = document.createElement("div");
   wrapper.innerHTML = html.trim();
   const next = wrapper.firstElementChild;
   if (!next) return;
+  const normalizedCurrent = normalizeMapState(current);
+  const normalizedNext = normalizeMapState(next);
+  if (normalizedCurrent.outerHTML === normalizedNext.outerHTML) return;
+  if (openMapNodes.size) {
+    openMapNodes.forEach((node, mapId) => {
+      const replacement = next.querySelector<HTMLElement>(`#${mapId}`);
+      if (replacement) {
+        replacement.replaceWith(node);
+      }
+    });
+  }
   current.replaceWith(next);
 };
 
 const applyFragments = (payload: FragmentPayload) => {
+  const openMapNodes = new Map(
+    Array.from(document.querySelectorAll<HTMLElement>(".map-container:not(.is-hidden)"))
+      .map((node) => [node.id, node] as const)
+      .filter(([id]) => id.length > 0),
+  );
+  const openMapSections = new Set(
+    Array.from(openMapNodes.values())
+      .map((node) => node.closest<HTMLElement>(".section")?.id)
+      .filter((id): id is string => Boolean(id)),
+  );
   document.body.setAttribute("data-updated-at", payload.updatedAt ?? "");
   document.body.setAttribute("data-last-scrape-at", payload.lastScrapeAt ?? "");
-  document.body.setAttribute("data-next-refresh", String(payload.nextRefreshAt));
+  document.body.setAttribute(
+    "data-next-refresh-wohnberatung",
+    String(payload.wohnberatungNextRefreshAt),
+  );
+  document.body.setAttribute("data-next-refresh-willhaben", String(payload.willhabenNextRefreshAt));
 
   const rateCount = document.getElementById("rate-count");
   if (rateCount) rateCount.textContent = String(payload.rateLimitCount);
   const rateLimit = document.getElementById("rate-limit");
   if (rateLimit) rateLimit.textContent = String(payload.rateLimitMonthly);
 
-  replaceSection("hidden-section", payload.sections.hidden);
-  replaceSection("interested-section", payload.sections.interested);
-  replaceSection("wohnungen-section", payload.sections.wohnungen);
-  replaceSection("planungsprojekte-section", payload.sections.planungsprojekte);
-  replaceSection("willhaben-section", payload.sections.willhaben);
+  if (!openMapSections.has("hidden-section")) {
+    replaceSection("hidden-section", payload.sections.hidden, openMapNodes);
+  }
+  if (!openMapSections.has("interested-section")) {
+    replaceSection("interested-section", payload.sections.interested, openMapNodes);
+  }
+  if (!openMapSections.has("wohnungen-section")) {
+    replaceSection("wohnungen-section", payload.sections.wohnungen, openMapNodes);
+  }
+  if (!openMapSections.has("planungsprojekte-section")) {
+    replaceSection("planungsprojekte-section", payload.sections.planungsprojekte, openMapNodes);
+  }
+  if (!openMapSections.has("willhaben-section")) {
+    replaceSection("willhaben-section", payload.sections.willhaben, openMapNodes);
+  }
   if (document.body.getAttribute("data-view") !== "settings" && !settingsDirty) {
-    replaceSection("settings-section", payload.sections.settings);
+    replaceSection("settings-section", payload.sections.settings, openMapNodes);
   }
 
   initInteractiveElements();
   syncPendingRemoveConfirms();
   updateHiddenCount();
   initWillhabenFilters();
-  applyWillhabenFilters();
   refreshDerivedUi();
   updateSwapIndicators();
   syncReorderActive();
@@ -1306,10 +1324,13 @@ const applyFragments = (payload: FragmentPayload) => {
 
 const refreshFromServer = async () => {
   if (reorderActive) return;
-  if (refreshPromise) return refreshPromise;
+  if (refreshPromise) {
+    refreshQueued = true;
+    return refreshPromise;
+  }
   refreshPromise = (async () => {
     try {
-      const response = await fetch("/api/fragment");
+      const response = await fetch(`/api/fragment${window.location.search}`);
       if (!response.ok) return;
       const payload = (await response.json()) as FragmentPayload;
       applyFragments(payload);
@@ -1317,6 +1338,10 @@ const refreshFromServer = async () => {
       return;
     } finally {
       refreshPromise = null;
+      if (refreshQueued) {
+        refreshQueued = false;
+        void refreshFromServer();
+      }
     }
   })();
   return refreshPromise;
@@ -1328,13 +1353,26 @@ const initEvents = () => {
     const current = document.body.getAttribute("data-updated-at");
     let updatedAt: string | undefined;
     try {
-      const payload = JSON.parse(event.data) as { updatedAt?: string; nextRefresh?: number };
+      const payload = JSON.parse(event.data) as {
+        updatedAt?: string;
+        nextRefreshWohnberatung?: number;
+        nextRefreshWillhaben?: number;
+      };
       updatedAt = payload.updatedAt;
       if (updatedAt) {
         document.body.setAttribute("data-updated-at", updatedAt);
       }
-      if (typeof payload.nextRefresh === "number") {
-        document.body.setAttribute("data-next-refresh", String(payload.nextRefresh));
+      if (typeof payload.nextRefreshWohnberatung === "number") {
+        document.body.setAttribute(
+          "data-next-refresh-wohnberatung",
+          String(payload.nextRefreshWohnberatung),
+        );
+      }
+      if (typeof payload.nextRefreshWillhaben === "number") {
+        document.body.setAttribute(
+          "data-next-refresh-willhaben",
+          String(payload.nextRefreshWillhaben),
+        );
       }
       updateRefreshLabel();
       updateNextRefreshLabel();

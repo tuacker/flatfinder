@@ -142,6 +142,15 @@ body[data-source="willhaben"] #hidden-list > .row[data-type="wohnungen"],
 body[data-source="willhaben"] #hidden-list > .row[data-type="planungsprojekte"] {
   display: none;
 }
+
+body[data-source="wohnberatung"] #interested-section .subsection[data-type="willhaben"] {
+  display: none;
+}
+
+body[data-source="willhaben"] #interested-section .subsection[data-type="wohnungen"],
+body[data-source="willhaben"] #interested-section .subsection[data-type="planungsprojekte"] {
+  display: none;
+}
 .section {
   margin-top: 32px;
 }
@@ -490,6 +499,22 @@ body[data-source="willhaben"] #hidden-list > .row[data-type="planungsprojekte"] 
   gap: 6px;
   align-items: flex-start;
 }
+.map-container.willhaben-details {
+  margin-left: 136px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.map-container.willhaben-details .details-map {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+.map-container.willhaben-details .details-map .btn {
+  align-self: flex-start;
+}
 .map-container iframe {
   width: 520px;
   max-width: 100%;
@@ -502,6 +527,16 @@ body[data-source="willhaben"] #hidden-list > .row[data-type="planungsprojekte"] 
   font-size: 14px;
   color: #0f172a;
   line-height: 1.5;
+}
+.map-container.willhaben-details .details-text {
+  max-width: none;
+}
+.map-container.willhaben-details .details-text p {
+  margin: 0 0 8px;
+}
+.map-container.willhaben-details .details-text h3,
+.map-container.willhaben-details .details-text h4 {
+  margin: 12px 0 8px;
 }
 .map-container.is-hidden {
   display: none;
@@ -629,6 +664,9 @@ a {
   }
   .map-container {
     margin-left: 0;
+  }
+  .map-container.willhaben-details {
+    grid-template-columns: 1fr;
   }
 }
 .willhaben-controls {

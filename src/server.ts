@@ -4,8 +4,10 @@ import path from "node:path";
 import {
   assetsDir,
   baseUrl,
+  planungsprojekteIntervalMinutes,
   rateLimitMonthly,
   storageStatePath,
+  wohnungssucheIntervalMinutes,
 } from "./scrapers/wohnberatung/config.js";
 import { createRateLimiter } from "./scrapers/wohnberatung/wohnberatung-service.js";
 import {
@@ -17,7 +19,15 @@ import {
   type InterestInfo,
   type TelegramConfig,
 } from "./scrapers/wohnberatung/state.js";
-import { getNextRefreshFallback, renderFragments, renderPage } from "../ui/render.js";
+import {
+  getNextRefreshFallback,
+  renderFragments,
+  renderPage,
+  type WillhabenFilters,
+  type WillhabenSortDir,
+  type WillhabenSortKey,
+} from "../ui/render.js";
+import { willhabenRefreshIntervalMs } from "./scrapers/willhaben/config.js";
 import { fetchTelegramUpdates, sendTelegramMessage, telegramRequest } from "./telegram.js";
 import { createSerialQueue } from "./runtime/scheduler.js";
 import { registerScraperJobs } from "./runtime/scraper-jobs.js";
@@ -73,6 +83,34 @@ const fetchWohnberatungHtml = async (url: string, cookieHeader: string) => {
 
 const nowIso = () => new Date().toISOString();
 type SourceFilter = "all" | "wohnberatung" | "willhaben";
+const parseListParam = (value: unknown): string[] => {
+  if (!value) return [];
+  if (Array.isArray(value)) {
+    return value
+      .flatMap((entry) => String(entry).split(","))
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  }
+  return String(value)
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+};
+
+const parseWillhabenFilters = (query: Record<string, unknown>): WillhabenFilters => {
+  const sortKeyRaw = query.wh_sort;
+  const sortDirRaw = query.wh_dir;
+  const sortKey: WillhabenSortKey =
+    sortKeyRaw === "price" || sortKeyRaw === "area" ? sortKeyRaw : null;
+  const sortDir: WillhabenSortDir =
+    sortDirRaw === "asc" || sortDirRaw === "desc" ? sortDirRaw : null;
+  return {
+    sortKey: sortKey && sortDir ? sortKey : null,
+    sortDir: sortKey && sortDir ? sortDir : null,
+    districts: parseListParam(query.wh_districts),
+    rooms: parseListParam(query.wh_rooms),
+  };
+};
 
 const signupLimit = 3;
 const interestRefreshIntervalMs = 15_000;
@@ -309,16 +347,25 @@ const fillOpenSlots = async (options: {
   return didUpdate;
 };
 
-const getNextRefreshAt = () => {
-  const scheduled = [
-    nextRefresh.wohnungen,
-    nextRefresh.planungsprojekte,
-    nextRefresh.willhaben,
-  ].filter((value) => value > 0);
+const getNextRefreshAtFor = (keys: Array<keyof typeof nextRefresh>) => {
+  const scheduled = keys.map((key) => nextRefresh[key]).filter((value) => value > 0);
   return scheduled.length ? Math.min(...scheduled) : 0;
 };
 
-const getNextRefreshAtWithFallback = () => getNextRefreshAt() || getNextRefreshFallback();
+const getNextWohnberatungRefreshAt = () => getNextRefreshAtFor(["wohnungen", "planungsprojekte"]);
+
+const getNextWillhabenRefreshAt = () => getNextRefreshAtFor(["willhaben"]);
+
+const getNextRefreshAtWithFallback = () =>
+  getNextRefreshAtFor(Object.keys(nextRefresh) as Array<keyof typeof nextRefresh>) ||
+  getNextRefreshFallback();
+
+const getNextWillhabenRefreshAtWithFallback = () =>
+  getNextWillhabenRefreshAt() || Date.now() + willhabenRefreshIntervalMs;
+
+const getNextWohnberatungRefreshAtWithFallback = () =>
+  getNextWohnberatungRefreshAt() ||
+  Date.now() + Math.min(wohnungssucheIntervalMinutes, planungsprojekteIntervalMinutes) * 60 * 1000;
 
 const getSourceFilter = (value: unknown): SourceFilter => {
   if (value === "wohnberatung" || value === "willhaben") return value;
@@ -357,7 +404,8 @@ const main = async () => {
   const notifyClients = () => {
     const payload = JSON.stringify({
       updatedAt: state.updatedAt,
-      nextRefresh: getNextRefreshAtWithFallback(),
+      nextRefreshWohnberatung: getNextWohnberatungRefreshAtWithFallback(),
+      nextRefreshWillhaben: getNextWillhabenRefreshAtWithFallback(),
     });
     for (const client of clients) {
       client.write(`data: ${payload}\n\n`);
@@ -682,7 +730,8 @@ const main = async () => {
     res.flushHeaders();
     const initialPayload = JSON.stringify({
       updatedAt: state.updatedAt,
-      nextRefresh: getNextRefreshAtWithFallback(),
+      nextRefreshWohnberatung: getNextWohnberatungRefreshAtWithFallback(),
+      nextRefreshWillhaben: getNextWillhabenRefreshAtWithFallback(),
     });
     res.write(`data: ${initialPayload}\n\n`);
     clients.add(res);
@@ -902,7 +951,32 @@ const main = async () => {
       (req.body as { action?: string; confirm?: boolean } | undefined)?.confirm ?? false;
 
     if (type === "willhaben") {
-      res.status(400).json({ ok: false, message: "Interest is not supported for Willhaben." });
+      if (!id || !action) {
+        res.status(400).json({ ok: false, message: "Missing action or id." });
+        return;
+      }
+      const collection = getCollection(state, type);
+      if (!collection) {
+        res.status(400).json({ ok: false, message: "Unknown item type." });
+        return;
+      }
+      const item = collection.find((entry) => entry.id === id);
+      if (!item) {
+        res.status(404).json({ ok: false, message: "Item not found." });
+        return;
+      }
+      const interest = ensureInterest(item);
+      const now = nowIso();
+      if (action === "add") {
+        if (!interest.requestedAt) interest.requestedAt = now;
+      } else if (action === "drop") {
+        interest.requestedAt = null;
+      } else {
+        res.status(400).json({ ok: false, message: "Unknown action." });
+        return;
+      }
+      await persistState(now);
+      res.json({ ok: true, signed: false });
       return;
     }
 
@@ -1084,28 +1158,52 @@ const main = async () => {
     res.json({ ok: true });
   });
 
-  app.get("/api/fragment", (_, res) =>
+  app.get("/api/fragment", (req, res) => {
+    const willhabenFilters = parseWillhabenFilters(req.query);
     res.json(
-      renderFragments(state, { nextRefreshAt: getNextRefreshAtWithFallback() }, telegramConfig),
-    ),
-  );
+      renderFragments(
+        state,
+        {
+          nextRefreshAt: getNextRefreshAtWithFallback(),
+          willhabenFilters,
+          wohnberatungNextRefreshAt: getNextWohnberatungRefreshAtWithFallback(),
+          willhabenNextRefreshAt: getNextWillhabenRefreshAtWithFallback(),
+        },
+        telegramConfig,
+      ),
+    );
+  });
   app.get("/api/state", (_, res) => res.json(state));
   app.get(["/hidden", "/interested", "/settings"], (req, res) => {
     const sourceFilter = getSourceFilter(req.query.source);
+    const willhabenFilters = parseWillhabenFilters(req.query);
     res.send(
       renderPage(
         state,
-        { nextRefreshAt: getNextRefreshAtWithFallback(), sourceFilter },
+        {
+          nextRefreshAt: getNextRefreshAtWithFallback(),
+          sourceFilter,
+          willhabenFilters,
+          wohnberatungNextRefreshAt: getNextWohnberatungRefreshAtWithFallback(),
+          willhabenNextRefreshAt: getNextWillhabenRefreshAtWithFallback(),
+        },
         telegramConfig,
       ),
     );
   });
   app.get("/", (req, res) => {
     const sourceFilter = getSourceFilter(req.query.source);
+    const willhabenFilters = parseWillhabenFilters(req.query);
     res.send(
       renderPage(
         state,
-        { nextRefreshAt: getNextRefreshAtWithFallback(), sourceFilter },
+        {
+          nextRefreshAt: getNextRefreshAtWithFallback(),
+          sourceFilter,
+          willhabenFilters,
+          wohnberatungNextRefreshAt: getNextWohnberatungRefreshAtWithFallback(),
+          willhabenNextRefreshAt: getNextWillhabenRefreshAtWithFallback(),
+        },
         telegramConfig,
       ),
     );
