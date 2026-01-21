@@ -766,7 +766,8 @@ body[data-view="settings"] [data-view-group]:not([data-view-group="settings"]) {
 }
 
 .settings-field input[type="text"],
-.settings-field input[type="password"] {
+.settings-field input[type="password"],
+.settings-field input[type="number"] {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 8px 12px;
@@ -789,6 +790,20 @@ body[data-view="settings"] [data-view-group]:not([data-view-group="settings"]) {
   margin-top: 8px;
   font-size: 12px;
   color: var(--accent);
+}
+
+.settings-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.settings-chips span {
+  margin-right: 6px;
 }
 
 .willhaben-controls {

@@ -2,6 +2,11 @@ import { getConfig, getMeta, getDb, loadItems, saveItems, setConfig, setMeta } f
 import type { Planungsprojekt } from "./parse-planungsprojekte.js";
 import type { WohnungDetail } from "./parse-wohnung-detail.js";
 import type { WohnungListItem } from "./parse-wohnungen-list.js";
+import {
+  willhabenDistrictCount,
+  willhabenMaxTotalCost,
+  willhabenMinArea,
+} from "../willhaben/config.js";
 
 export type PlanungsprojektDetail = {
   lageplanUrl: string | null;
@@ -53,6 +58,15 @@ export type WillhabenDetail = {
   primaryCost?: string | null;
   primaryCostLabel?: string | null;
   sellerName?: string | null;
+  createdDate?: string | null;
+  changedDate?: string | null;
+  advertStatus?: {
+    id?: string | null;
+    description?: string | null;
+    statusId?: number | null;
+  } | null;
+  expired?: boolean | null;
+  expiredAdId?: string | null;
 };
 
 export type WillhabenRecord = {
@@ -75,6 +89,12 @@ export type WillhabenRecord = {
   totalCostValue?: number | null;
   firstSeenAt: string;
   lastSeenAt: string;
+  createdAt?: string | null;
+  changedAt?: string | null;
+  advertStatusId?: number | null;
+  advertStatus?: string | null;
+  advertStatusDescription?: string | null;
+  lastDetailCheckAt?: string | null;
   seenAt?: string | null;
   hiddenAt?: string | null;
   suppressed?: boolean | null;
@@ -99,6 +119,14 @@ export type TelegramConfig = {
   pollingOffset: number | null;
 };
 
+export type WillhabenSearchConfig = {
+  minArea: number | null;
+  maxArea: number | null;
+  minTotalCost: number | null;
+  maxTotalCost: number | null;
+  districts: string[];
+};
+
 export type FlatfinderState = {
   updatedAt: string | null;
   lastScrapeAt?: string | null;
@@ -114,6 +142,7 @@ export type FlatfinderState = {
 const currentMonth = () => new Date().toISOString().slice(0, 7);
 
 const telegramConfigKey = "telegram.config";
+const willhabenConfigKey = "willhaben.config";
 const metaKeys = {
   updatedAt: "state.updatedAt",
   lastScrapeAt: "state.lastScrapeAt",
@@ -146,6 +175,47 @@ export const normalizeTelegramConfig = (
   pollingEnabled: Boolean(raw?.pollingEnabled),
   pollingOffset: typeof raw?.pollingOffset === "number" ? raw.pollingOffset : null,
 });
+
+const defaultWillhabenConfig = (): WillhabenSearchConfig => ({
+  minArea: willhabenMinArea,
+  maxArea: null,
+  minTotalCost: null,
+  maxTotalCost: willhabenMaxTotalCost,
+  districts: Array.from({ length: willhabenDistrictCount }, (_, index) => String(index + 1)),
+});
+
+const normalizeDistricts = (raw: unknown): string[] => {
+  if (!Array.isArray(raw)) return defaultWillhabenConfig().districts;
+  const normalized = raw
+    .map((value) => String(value).trim())
+    .map((value) => Number.parseInt(value, 10))
+    .filter((value) => Number.isFinite(value) && value >= 1 && value <= willhabenDistrictCount)
+    .map((value) => String(value));
+  return normalized.length ? Array.from(new Set(normalized)) : defaultWillhabenConfig().districts;
+};
+
+const normalizeNumber = (value: unknown): number | null => {
+  if (value === null || value === undefined) return null;
+  const parsed = Number(String(value).replace(",", ".").trim());
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+export const normalizeWillhabenConfig = (
+  raw: Partial<WillhabenSearchConfig> | null | undefined,
+): WillhabenSearchConfig => {
+  const defaults = defaultWillhabenConfig();
+  const minArea = normalizeNumber(raw?.minArea);
+  const maxArea = normalizeNumber(raw?.maxArea);
+  const minTotalCost = normalizeNumber(raw?.minTotalCost);
+  const maxTotalCost = normalizeNumber(raw?.maxTotalCost);
+  return {
+    minArea: minArea ?? defaults.minArea,
+    maxArea,
+    minTotalCost,
+    maxTotalCost: maxTotalCost ?? defaults.maxTotalCost,
+    districts: normalizeDistricts(raw?.districts),
+  };
+};
 
 const defaultState = (): FlatfinderState => ({
   updatedAt: null,
@@ -228,6 +298,22 @@ export const loadTelegramConfig = async (): Promise<TelegramConfig> => {
 export const saveTelegramConfig = async (config: TelegramConfig) => {
   ensureDb();
   setConfig(telegramConfigKey, JSON.stringify(config));
+};
+
+export const loadWillhabenConfig = async (): Promise<WillhabenSearchConfig> => {
+  ensureDb();
+  const raw = getConfig(willhabenConfigKey);
+  if (!raw) return defaultWillhabenConfig();
+  try {
+    return normalizeWillhabenConfig(JSON.parse(raw) as WillhabenSearchConfig);
+  } catch {
+    return defaultWillhabenConfig();
+  }
+};
+
+export const saveWillhabenConfig = async (config: WillhabenSearchConfig) => {
+  ensureDb();
+  setConfig(willhabenConfigKey, JSON.stringify(config));
 };
 
 export { defaultState };

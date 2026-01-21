@@ -6,9 +6,12 @@ import {
   scrapePlanungsprojekte,
   scrapeWohnungen,
 } from "../scrapers/wohnberatung/wohnberatung-service.js";
-import { scrapeWillhaben } from "../scrapers/willhaben/willhaben-service.js";
+import {
+  refreshWillhabenDetails,
+  scrapeWillhaben,
+} from "../scrapers/willhaben/willhaben-service.js";
 import { willhabenRefreshIntervalMs } from "../scrapers/willhaben/config.js";
-import type { FlatfinderState } from "../scrapers/wohnberatung/state.js";
+import type { FlatfinderState, WillhabenSearchConfig } from "../scrapers/wohnberatung/state.js";
 import type { RateLimiter } from "../scrapers/wohnberatung/rate-limiter.js";
 import type { JobRunner } from "./scheduler.js";
 import { scheduleJob } from "./scheduler.js";
@@ -26,6 +29,7 @@ type ScraperJobsOptions = {
   nowIso: () => string;
   persistState: (updatedAt?: string) => Promise<string>;
   getTelegramConfig: () => TelegramConfig;
+  getWillhabenConfig: () => WillhabenSearchConfig;
   onSchedule: (key: "wohnungen" | "planungsprojekte" | "willhaben", nextAt: number) => void;
 };
 
@@ -90,7 +94,11 @@ export const registerScraperJobs = (options: ScraperJobsOptions) => {
         ? new Date(options.state.lastWillhabenFetchAt).getTime()
         : Number.NaN;
       const recentOnly = Number.isFinite(lastFetch) && Date.now() - lastFetch <= fortyEightHoursMs;
-      await scrapeWillhaben(options.state, { recentOnly });
+      await scrapeWillhaben(options.state, {
+        recentOnly,
+        config: options.getWillhabenConfig(),
+      });
+      await refreshWillhabenDetails(options.state);
       await notifyAndPersist("willhaben");
     },
   });

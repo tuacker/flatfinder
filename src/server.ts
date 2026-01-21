@@ -15,8 +15,12 @@ import {
   defaultTelegramConfig,
   loadTelegramConfig,
   saveTelegramConfig,
+  loadWillhabenConfig,
+  normalizeWillhabenConfig,
+  saveWillhabenConfig,
   type InterestInfo,
   type TelegramConfig,
+  type WillhabenSearchConfig,
 } from "./scrapers/wohnberatung/state.js";
 import {
   renderFragments,
@@ -261,6 +265,7 @@ const main = async () => {
   await ensureStorageState();
   state = await loadState();
   let telegramConfig = await loadTelegramConfig();
+  let willhabenConfig = await loadWillhabenConfig();
 
   const app = express();
   app.use(express.json());
@@ -456,6 +461,20 @@ const main = async () => {
     await saveTelegramConfig(ensureTelegramConfig());
   };
 
+  const ensureWillhabenConfig = () => {
+    if (!willhabenConfig) {
+      willhabenConfig = normalizeWillhabenConfig(null);
+    }
+    return willhabenConfig;
+  };
+
+  const persistWillhabenConfig = async (config?: WillhabenSearchConfig) => {
+    if (config) {
+      willhabenConfig = config;
+    }
+    await saveWillhabenConfig(ensureWillhabenConfig());
+  };
+
   const handleTelegramCallback = async (
     config: TelegramConfig,
     callback: { id: string; data?: string } | undefined,
@@ -610,6 +629,7 @@ const main = async () => {
   const runTelegramPolling = async () => {
     if (telegramPollingRunning) return;
     telegramPollingRunning = true;
+    let hadError = false;
     try {
       const config = ensureTelegramConfig();
       if (
@@ -622,14 +642,31 @@ const main = async () => {
         return;
       }
 
-      const result = await fetchTelegramUpdates(config, {
-        offset: config.pollingOffset ?? 0,
-        timeoutSeconds: 30,
-        limit: 100,
-        allowedUpdates: ["callback_query"],
-      });
+      let result: Awaited<ReturnType<typeof fetchTelegramUpdates>> | null = null;
+      try {
+        result = await fetchTelegramUpdates(config, {
+          offset: config.pollingOffset ?? 0,
+          timeoutSeconds: 30,
+          limit: 100,
+          allowedUpdates: ["callback_query"],
+        });
+      } catch (error) {
+        hadError = true;
+        const details =
+          error &&
+          typeof error === "object" &&
+          "cause" in error &&
+          (error as { cause?: unknown }).cause
+            ? ` (${String((error as { cause?: unknown }).cause)})`
+            : "";
+        console.warn(
+          "[telegram] polling failed:",
+          error instanceof Error ? `${error.message}${details}` : String(error),
+        );
+        return;
+      }
 
-      if (!result.ok) return;
+      if (!result || !result.ok) return;
 
       let nextOffset = config.pollingOffset ?? 0;
       for (const update of result.updates) {
@@ -643,7 +680,7 @@ const main = async () => {
       }
     } finally {
       telegramPollingRunning = false;
-      scheduleTelegramPolling(1000);
+      scheduleTelegramPolling(hadError ? 5000 : 1000);
     }
   };
 
@@ -701,6 +738,13 @@ const main = async () => {
     scheduleTelegramPolling();
 
     res.json({ ok: true, config });
+  });
+
+  app.post("/api/willhaben/config", async (req, res) => {
+    const body = req.body as Partial<WillhabenSearchConfig> | undefined;
+    const normalized = normalizeWillhabenConfig(body ?? null);
+    await persistWillhabenConfig(normalized);
+    res.json({ ok: true, config: normalized });
   });
 
   app.post("/api/telegram/test", async (_req, res) => {
@@ -1026,14 +1070,26 @@ const main = async () => {
   });
 
   app.get("/api/fragment", (req, res) => {
-    res.json(renderFragments(state, buildFragmentOptions(req.query), telegramConfig));
+    const options = {
+      ...buildFragmentOptions(req.query),
+      willhabenConfig: ensureWillhabenConfig(),
+    };
+    res.json(renderFragments(state, options, telegramConfig));
   });
   app.get("/api/state", (_, res) => res.json(state));
   app.get(["/hidden", "/interested", "/settings"], (req, res) => {
-    res.send(renderPage(state, buildRenderOptions(req.query), telegramConfig));
+    const options = {
+      ...buildRenderOptions(req.query),
+      willhabenConfig: ensureWillhabenConfig(),
+    };
+    res.send(renderPage(state, options, telegramConfig));
   });
   app.get("/", (req, res) => {
-    res.send(renderPage(state, buildRenderOptions(req.query), telegramConfig));
+    const options = {
+      ...buildRenderOptions(req.query),
+      willhabenConfig: ensureWillhabenConfig(),
+    };
+    res.send(renderPage(state, options, telegramConfig));
   });
 
   app.listen(port, () => {
@@ -1052,6 +1108,7 @@ const main = async () => {
     nowIso,
     persistState,
     getTelegramConfig: ensureTelegramConfig,
+    getWillhabenConfig: ensureWillhabenConfig,
     onSchedule: (key, nextAt) => {
       nextRefresh[key] = nextAt;
       notifyClients();

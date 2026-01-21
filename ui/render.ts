@@ -2,6 +2,7 @@ import { rateLimitMonthly } from "../src/scrapers/wohnberatung/config.js";
 import type {
   FlatfinderState,
   TelegramConfig,
+  WillhabenSearchConfig,
   WohnungRecord,
   WillhabenRecord,
 } from "../src/scrapers/wohnberatung/state.js";
@@ -13,6 +14,7 @@ export type RenderOptions = {
   willhabenNextRefreshAt: number;
   sourceFilter?: SourceFilter;
   willhabenFilters?: WillhabenFilters;
+  willhabenConfig?: WillhabenSearchConfig | null;
 };
 
 export type RenderFragments = {
@@ -460,7 +462,15 @@ const renderWillhabenRow = (item: WillhabenRecord) => {
   const mapUrl = item.detail?.mapUrl ?? null;
   const mapEmbed = mapUrl ? buildMapEmbedUrl(mapUrl) : null;
 
-  const images = item.images?.length ? item.images : item.thumbnailUrl ? [item.thumbnailUrl] : [];
+  const detailImages = item.detail?.images ?? [];
+  const images =
+    detailImages.length > 0
+      ? detailImages
+      : item.images?.length
+        ? item.images
+        : item.thumbnailUrl
+          ? [item.thumbnailUrl]
+          : [];
   const imageData = encodeImages(images);
   const thumbSrc = images[0] ?? null;
   const thumb = thumbSrc
@@ -665,6 +675,68 @@ const renderTelegramSettings = (config: TelegramConfig | null | undefined) => {
   `;
 };
 
+const renderWillhabenSettings = (config: WillhabenSearchConfig | null | undefined) => {
+  const minArea = config?.minArea ?? "";
+  const maxArea = config?.maxArea ?? "";
+  const minPrice = config?.minTotalCost ?? "";
+  const maxPrice = config?.maxTotalCost ?? "";
+  const selectedDistricts = new Set(config?.districts ?? []);
+  const districtOptions = Array.from({ length: 23 }, (_, index) => String(index + 1));
+  return `
+    <div class="settings-card" id="willhaben-settings">
+      <div class="settings-header">
+        <h2>Willhaben search</h2>
+        <div class="settings-actions">
+          <button class="btn btn-primary" id="willhaben-save">Save</button>
+        </div>
+      </div>
+      <div class="settings-grid">
+        <label class="settings-field">
+          <span>Min Fläche (m²)</span>
+          <input type="number" id="willhaben-min-area" value="${escapeHtml(
+            String(minArea),
+          )}" placeholder="e.g. 45" min="0" step="1" />
+        </label>
+        <label class="settings-field">
+          <span>Max Fläche (m²)</span>
+          <input type="number" id="willhaben-max-area" value="${escapeHtml(
+            String(maxArea),
+          )}" placeholder="e.g. 120" min="0" step="1" />
+        </label>
+        <label class="settings-field">
+          <span>Min Gesamtmiete (€)</span>
+          <input type="number" id="willhaben-min-price" value="${escapeHtml(
+            String(minPrice),
+          )}" placeholder="e.g. 600" min="0" step="1" />
+        </label>
+        <label class="settings-field">
+          <span>Max Gesamtmiete (€)</span>
+          <input type="number" id="willhaben-max-price" value="${escapeHtml(
+            String(maxPrice),
+          )}" placeholder="e.g. 1550" min="0" step="1" />
+        </label>
+      </div>
+      <div class="settings-chips" id="willhaben-districts">
+        <span>Districts</span>
+        <button class="filter-chip js-willhaben-district${
+          selectedDistricts.size === 0 || selectedDistricts.size === districtOptions.length
+            ? " is-active"
+            : ""
+        }" data-value="all">All</button>
+        ${districtOptions
+          .map((value) => {
+            const active = selectedDistricts.has(value);
+            return `<button class="filter-chip js-willhaben-district${
+              active ? " is-active" : ""
+            }" data-value="${escapeHtml(value)}">${escapeHtml(value.padStart(2, "0"))}.</button>`;
+          })
+          .join("")}
+      </div>
+      <div class="settings-status" id="willhaben-status"></div>
+    </div>
+  `;
+};
+
 const renderWillhabenControls = (options: { districts: string[]; filters: WillhabenFilters }) => `
   <div class="willhaben-controls" id="willhaben-controls">
     <div class="filter-group">
@@ -695,10 +767,14 @@ const renderWillhabenControls = (options: { districts: string[]; filters: Willha
   </div>
 `;
 
-const renderSettingsSection = (config: TelegramConfig | null | undefined) => `
+const renderSettingsSection = (
+  config: TelegramConfig | null | undefined,
+  willhabenConfig?: WillhabenSearchConfig | null,
+) => `
   <div id="settings-section" class="section" data-view-group="settings">
     <h2>Settings</h2>
     ${renderTelegramSettings(config)}
+    ${renderWillhabenSettings(willhabenConfig)}
   </div>
 `;
 
@@ -756,6 +832,7 @@ const sortByRank = <
 const buildSections = (
   state: FlatfinderState,
   telegramConfig?: TelegramConfig | null,
+  willhabenConfig?: WillhabenSearchConfig | null,
   willhabenFilters?: WillhabenFilters,
 ) => {
   const isInterested = (item: {
@@ -903,7 +980,7 @@ const buildSections = (
   return {
     hiddenSection: renderHiddenSection(hiddenRows, hiddenCount),
     interestedSection,
-    settingsSection: renderSettingsSection(telegramConfig),
+    settingsSection: renderSettingsSection(telegramConfig, willhabenConfig),
     wohnungenSection: renderSection(
       `Wohnungen (${wohnungenCount})`,
       wohnungen,
@@ -937,7 +1014,12 @@ export const renderFragments = (
   options: RenderOptions,
   telegramConfig?: TelegramConfig | null,
 ): RenderFragments => {
-  const sections = buildSections(state, telegramConfig, options.willhabenFilters);
+  const sections = buildSections(
+    state,
+    telegramConfig,
+    options.willhabenConfig,
+    options.willhabenFilters,
+  );
   return {
     updatedAt: state.updatedAt ?? null,
     wohnberatungNextRefreshAt: options.wohnberatungNextRefreshAt,
@@ -961,7 +1043,12 @@ export const renderPage = (
   telegramConfig?: TelegramConfig | null,
 ) => {
   const sourceFilter: SourceFilter = options.sourceFilter ?? "all";
-  const sections = buildSections(state, telegramConfig, options.willhabenFilters);
+  const sections = buildSections(
+    state,
+    telegramConfig,
+    options.willhabenConfig,
+    options.willhabenFilters,
+  );
 
   const updatedAt = state.updatedAt ?? "";
   return `
@@ -986,15 +1073,15 @@ export const renderPage = (
               </div>
             </div>
             <div class="header-status">
+              <div class="status-line">
+                Willhaben <span id="next-refresh-willhaben"></span> / WW <span id="next-refresh-wohnberatung"></span> &middot; <span id="rate-count">${state.rateLimit.count}</span>/<span id="rate-limit">${rateLimitMonthly}</span>
+              </div>
               <button class="btn btn-muted btn-icon btn-icon-sm js-view-toggle" data-view="settings" aria-label="Settings" title="Settings">
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                   <path d="M12 8.5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 0 0 0-7z"></path>
                   <path d="M19.4 12.9a7.9 7.9 0 0 0 .1-.9a7.9 7.9 0 0 0-.1-.9l2-1.5a.7.7 0 0 0 .2-.9l-1.9-3.3a.7.7 0 0 0-.9-.3l-2.3.9a7.7 7.7 0 0 0-1.6-.9l-.3-2.4a.7.7 0 0 0-.7-.6h-3.8a.7.7 0 0 0-.7.6l-.3 2.4a7.7 7.7 0 0 0-1.6.9l-2.3-.9a.7.7 0 0 0-.9.3L2.5 8.7a.7.7 0 0 0 .2.9l2 1.5a7.9 7.9 0 0 0-.1.9a7.9 7.9 0 0 0 .1.9l-2 1.5a.7.7 0 0 0-.2.9l1.9 3.3a.7.7 0 0 0 .9.3l2.3-.9a7.7 7.7 0 0 0 1.6.9l.3 2.4a.7.7 0 0 0 .7.6h3.8a.7.7 0 0 0 .7-.6l.3-2.4a7.7 7.7 0 0 0 1.6-.9l2.3.9a.7.7 0 0 0 .9-.3l1.9-3.3a.7.7 0 0 0-.2-.9l-2-1.5z"></path>
                 </svg>
               </button>
-              <div class="status-line">
-                Willhaben <span id="next-refresh-willhaben"></span> / WW <span id="next-refresh-wohnberatung"></span> &middot; <span id="rate-count">${state.rateLimit.count}</span>/<span id="rate-limit">${rateLimitMonthly}</span>
-              </div>
             </div>
           </div>
           <div class="header-divider"></div>

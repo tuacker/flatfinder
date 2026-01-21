@@ -1016,11 +1016,108 @@ const initTelegramSettings = () => {
   });
 };
 
+const initWillhabenSettings = () => {
+  const saveButton = document.getElementById("willhaben-save") as HTMLButtonElement | null;
+  if (!saveButton) return;
+  const minArea = document.getElementById("willhaben-min-area") as HTMLInputElement | null;
+  const maxArea = document.getElementById("willhaben-max-area") as HTMLInputElement | null;
+  const minPrice = document.getElementById("willhaben-min-price") as HTMLInputElement | null;
+  const maxPrice = document.getElementById("willhaben-max-price") as HTMLInputElement | null;
+  const status = document.getElementById("willhaben-status");
+  const districtButtons = Array.from(
+    document.querySelectorAll<HTMLButtonElement>("#willhaben-districts .js-willhaben-district"),
+  );
+
+  const markDirty = () => {
+    settingsDirty = true;
+  };
+
+  const parseNumber = (value: string | null) => {
+    if (!value) return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const parsed = Number(trimmed.replace(",", "."));
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  const syncAllChip = () => {
+    const allChip = districtButtons.find((button) => button.dataset.value === "all");
+    if (!allChip) return;
+    const activeSpecific = districtButtons.filter(
+      (button) => button.dataset.value !== "all" && button.classList.contains("is-active"),
+    );
+    const allActive =
+      activeSpecific.length ===
+      districtButtons.filter((button) => button.dataset.value !== "all").length;
+    allChip.classList.toggle("is-active", allActive || activeSpecific.length === 0);
+  };
+
+  [minArea, maxArea, minPrice, maxPrice]
+    .filter((input): input is HTMLInputElement => Boolean(input))
+    .forEach((input) => {
+      bindOnceEvent(input, "boundWillhabenDirtyInput", "input", markDirty);
+      bindOnceEvent(input, "boundWillhabenDirtyChange", "change", markDirty);
+    });
+
+  districtButtons.forEach((button) => {
+    bindOnce(button, "boundWillhabenDistrict", async (event) => {
+      event.preventDefault();
+      const value = button.dataset.value;
+      if (!value) return;
+      if (value === "all") {
+        const allButtons = districtButtons.filter((btn) => btn.dataset.value !== "all");
+        const shouldActivate = allButtons.some((btn) => !btn.classList.contains("is-active"));
+        allButtons.forEach((btn) => btn.classList.toggle("is-active", shouldActivate));
+      } else {
+        button.classList.toggle("is-active");
+      }
+      syncAllChip();
+      markDirty();
+    });
+  });
+
+  bindOnce(saveButton, "boundWillhabenSave", async (event) => {
+    event.preventDefault();
+    saveButton.disabled = true;
+    if (status) status.textContent = "Saving…";
+    try {
+      const districts = districtButtons
+        .filter(
+          (button) => button.dataset.value !== "all" && button.classList.contains("is-active"),
+        )
+        .map((button) => button.dataset.value ?? "")
+        .filter(Boolean);
+      const response = await fetch("/api/willhaben/config", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          minArea: parseNumber(minArea?.value ?? null),
+          maxArea: parseNumber(maxArea?.value ?? null),
+          minTotalCost: parseNumber(minPrice?.value ?? null),
+          maxTotalCost: parseNumber(maxPrice?.value ?? null),
+          districts,
+        }),
+      });
+      if (!response.ok) {
+        if (status) status.textContent = "Save failed.";
+        return;
+      }
+      if (status) status.textContent = "Saved.";
+      settingsDirty = false;
+    } catch {
+      if (status) status.textContent = "Save failed.";
+    } finally {
+      saveButton.disabled = false;
+    }
+  });
+};
+
 const initInteractiveElements = () => {
   initMapToggles();
   initViewToggles();
   initSourceFilters();
   initTelegramSettings();
+  initWillhabenSettings();
   initInterestActions();
   initLockActions();
   initRemoveHover();

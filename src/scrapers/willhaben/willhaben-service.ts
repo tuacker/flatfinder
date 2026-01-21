@@ -1,6 +1,9 @@
 import {
-  willhabenAreaIds,
   willhabenDetailBaseUrl,
+  willhabenDetailRefreshIgnoredIntervalMs,
+  willhabenDetailRefreshIntervalMs,
+  willhabenDistrictAreaIds,
+  willhabenDistrictCount,
   willhabenExcludedKeywords,
   willhabenMaxTotalCost,
   willhabenMinArea,
@@ -8,8 +11,14 @@ import {
   willhabenRoomBuckets,
   willhabenRowsPerPage,
   willhabenSearchUrl,
+  willhabenViennaAreaId,
 } from "./config.js";
-import type { FlatfinderState, WillhabenDetail, WillhabenRecord } from "../wohnberatung/state.js";
+import type {
+  FlatfinderState,
+  WillhabenDetail,
+  WillhabenRecord,
+  WillhabenSearchConfig,
+} from "../wohnberatung/state.js";
 
 type WillhabenAttribute = {
   name: string;
@@ -53,6 +62,14 @@ const extractNextData = (html: string) => {
         advertDetails?: {
           attributes?: { attribute?: WillhabenAttribute[] };
           advertImageList?: { advertImage?: Array<{ mainImageUrl?: string | null }> };
+          createdDate?: string | null;
+          changedDate?: string | null;
+          advertStatus?: {
+            id?: string | null;
+            description?: string | null;
+            statusId?: number | null;
+          };
+          sellerProfileUserData?: { name?: string | null } | string | null;
         };
       };
     };
@@ -64,12 +81,34 @@ const getAttributeValue = (attrs: WillhabenAttribute[], name: string) => {
   return found?.values?.[0] ?? null;
 };
 
-const buildSearchUrl = (options: { page: number; recentOnly: boolean }) => {
+const getAreaIds = (config?: WillhabenSearchConfig | null) => {
+  if (!config?.districts?.length) return [willhabenViennaAreaId];
+  const normalized = config.districts
+    .map((value) => Number.parseInt(value, 10))
+    .filter((value) => Number.isFinite(value) && value >= 1 && value <= willhabenDistrictCount);
+  if (normalized.some((value) => value > willhabenDistrictAreaIds.length)) {
+    return [willhabenViennaAreaId];
+  }
+  const ids = normalized.map((value) => willhabenDistrictAreaIds[value - 1]).filter(Boolean);
+  return ids.length ? ids : [willhabenViennaAreaId];
+};
+
+const buildSearchUrl = (options: {
+  page: number;
+  recentOnly: boolean;
+  config?: WillhabenSearchConfig | null;
+}) => {
   const params = new URLSearchParams();
-  willhabenAreaIds.forEach((id) => params.append("areaId", id));
+  getAreaIds(options.config).forEach((id) => params.append("areaId", id));
   willhabenRoomBuckets.forEach((bucket) => params.append("NO_OF_ROOMS_BUCKET", bucket));
-  params.set("ESTATE_SIZE/LIVING_AREA_FROM", String(willhabenMinArea));
-  params.set("PRICE_TO", String(willhabenMaxTotalCost));
+  const minArea = options.config?.minArea ?? willhabenMinArea;
+  const maxArea = options.config?.maxArea ?? null;
+  const minTotalCost = options.config?.minTotalCost ?? null;
+  const maxTotalCost = options.config?.maxTotalCost ?? willhabenMaxTotalCost;
+  if (minArea !== null) params.set("ESTATE_SIZE/LIVING_AREA_FROM", String(minArea));
+  if (maxArea !== null) params.set("ESTATE_SIZE/LIVING_AREA_TO", String(maxArea));
+  if (minTotalCost !== null) params.set("PRICE_FROM", String(minTotalCost));
+  if (maxTotalCost !== null) params.set("PRICE_TO", String(maxTotalCost));
   params.set("rows", String(willhabenRowsPerPage));
   params.set("page", String(options.page));
   if (options.recentOnly) {
@@ -166,10 +205,85 @@ const parseCurrencyValue = (value: string | null | undefined) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+const parseNumericValue = (value: string | null | undefined) => {
+  if (!value) return null;
+  const cleaned = value.replace(/[^\d.,]/g, "");
+  if (!cleaned) return null;
+  const hasComma = cleaned.includes(",");
+  const hasDot = cleaned.includes(".");
+  let normalized = cleaned;
+  if (hasComma && hasDot) {
+    const lastComma = cleaned.lastIndexOf(",");
+    const lastDot = cleaned.lastIndexOf(".");
+    if (lastComma > lastDot) {
+      normalized = cleaned.replace(/\./g, "").replace(",", ".");
+    } else {
+      normalized = cleaned.replace(/,/g, "");
+    }
+  } else if (hasComma) {
+    normalized = cleaned.replace(",", ".");
+  }
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const extractDistrictCode = (value: string | null | undefined) => {
+  if (!value) return null;
+  const match = value.match(/\b(0?[1-9]|1[0-9]|2[0-3])\.?\s*Bezirk/i);
+  if (match) return match[1].padStart(2, "0");
+  const postalMatch = value.match(/\b1(\d{2})\d\b/);
+  if (postalMatch) return postalMatch[1];
+  return null;
+};
+
+const matchesDistrict = (
+  record: {
+    district?: string | null;
+    location?: string | null;
+    postalCode?: string | null;
+    address?: string | null;
+  },
+  config?: WillhabenSearchConfig | null,
+) => {
+  const selected = config?.districts ?? [];
+  if (selected.length === 0 || selected.length >= willhabenDistrictCount) return true;
+  const code =
+    extractDistrictCode(record.district ?? null) ??
+    extractDistrictCode(record.location ?? null) ??
+    extractDistrictCode(record.postalCode ?? null) ??
+    extractDistrictCode(record.address ?? null);
+  if (!code) return false;
+  const normalized = String(Number(code));
+  return selected.includes(normalized);
+};
+
 const formatCurrencyValue = (value: string | null | undefined) => {
   const numeric = parseCurrencyValue(value);
   if (numeric === null) return null;
   return new Intl.NumberFormat("de-AT", { style: "currency", currency: "EUR" }).format(numeric);
+};
+
+const isIgnored = (record: { hiddenAt?: string | null; suppressed?: boolean | null }) =>
+  Boolean(record.hiddenAt || record.suppressed);
+
+const isAdvertActive = (status: string | null | undefined) => {
+  if (!status) return true;
+  const normalized = status.toLowerCase();
+  return normalized === "active" || normalized === "reserved";
+};
+
+const shouldRefreshDetail = (
+  record: { lastDetailCheckAt?: string | null } & {
+    hiddenAt?: string | null;
+    suppressed?: boolean | null;
+  },
+  nowMs: number,
+) => {
+  const last = record.lastDetailCheckAt ? new Date(record.lastDetailCheckAt).getTime() : 0;
+  const intervalMs = isIgnored(record)
+    ? willhabenDetailRefreshIgnoredIntervalMs
+    : willhabenDetailRefreshIntervalMs;
+  return nowMs - last >= intervalMs;
 };
 
 const pickTotalCostValue = (record: {
@@ -192,15 +306,41 @@ const pickTotalCostValue = (record: {
   return null;
 };
 
-const isOverMaxCost = (record: { primaryCost?: string | null; costs?: Record<string, string> }) => {
+const isOverMaxCost = (
+  record: { primaryCost?: string | null; costs?: Record<string, string> },
+  config?: WillhabenSearchConfig | null,
+) => {
   const value = pickTotalCostValue(record);
-  return value !== null && value > willhabenMaxTotalCost;
+  const max = config?.maxTotalCost ?? willhabenMaxTotalCost;
+  if (max === null) return false;
+  return value !== null && value > max;
 };
 
 const getTotalCostValue = (record: {
   primaryCost?: string | null;
   costs?: Record<string, string>;
 }) => pickTotalCostValue(record);
+
+const isUnderMinCost = (
+  record: { primaryCost?: string | null; costs?: Record<string, string> },
+  config?: WillhabenSearchConfig | null,
+) => {
+  const min = config?.minTotalCost ?? null;
+  if (min === null) return false;
+  const value = pickTotalCostValue(record);
+  return value !== null && value < min;
+};
+
+const isOutsideArea = (record: { size?: string | null }, config?: WillhabenSearchConfig | null) => {
+  const min = config?.minArea ?? null;
+  const max = config?.maxArea ?? null;
+  if (min === null && max === null) return false;
+  const value = parseNumericValue(record.size ?? null);
+  if (value === null) return false;
+  if (min !== null && value < min) return true;
+  if (max !== null && value > max) return true;
+  return false;
+};
 
 const normalizeDescription = (value: string | null | undefined) => {
   if (!value) return null;
@@ -211,6 +351,28 @@ const normalizeDescription = (value: string | null | undefined) => {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 };
+
+const normalizeImageUrl = (url: string | null | undefined) => {
+  if (!url) return null;
+  return url.replace(/_(hoved|thumb)(\.[a-z0-9]+)$/i, "$2");
+};
+
+const collectImages = (
+  images: Array<{
+    referenceImageUrl?: string | null;
+    mainImageUrl?: string | null;
+    thumbnailImageUrl?: string | null;
+  }>,
+) =>
+  images
+    .map(
+      (img) =>
+        normalizeImageUrl(img.referenceImageUrl) ??
+        normalizeImageUrl(img.mainImageUrl) ??
+        normalizeImageUrl(img.thumbnailImageUrl) ??
+        null,
+    )
+    .filter((img): img is string => Boolean(img));
 
 const buildMapUrl = (coordinates: string | null, location: string | null) => {
   if (coordinates) {
@@ -291,12 +453,14 @@ const parseSummary = (
       : publishedRaw
     : null;
 
-  const images =
-    summary.advertImageList?.advertImage
-      ?.map((img) => img.mainImageUrl ?? img.referenceImageUrl ?? null)
-      .filter((img): img is string => Boolean(img)) ?? [];
+  const summaryImages = collectImages(summary.advertImageList?.advertImage ?? []);
+  const detailImages = previous?.detail?.images ?? [];
+  const images = detailImages.length ? detailImages : summaryImages;
   const thumbnailUrl =
-    summary.advertImageList?.advertImage?.[0]?.thumbnailImageUrl ?? images[0] ?? null;
+    detailImages[0] ??
+    summary.advertImageList?.advertImage?.[0]?.thumbnailImageUrl ??
+    images[0] ??
+    null;
 
   const costsSummary = extractCosts(attrs);
   const mergedCosts =
@@ -331,6 +495,12 @@ const parseSummary = (
     totalCostValue,
     firstSeenAt: previous?.firstSeenAt ?? now,
     lastSeenAt: now,
+    createdAt: previous?.createdAt ?? null,
+    changedAt: previous?.changedAt ?? null,
+    advertStatusId: previous?.advertStatusId ?? null,
+    advertStatus: previous?.advertStatus ?? null,
+    advertStatusDescription: previous?.advertStatusDescription ?? null,
+    lastDetailCheckAt: previous?.lastDetailCheckAt ?? null,
     seenAt: previous?.seenAt ?? null,
     hiddenAt: previous?.hiddenAt ?? null,
     suppressed: previous?.suppressed ?? null,
@@ -340,8 +510,12 @@ const parseSummary = (
   } satisfies WillhabenRecord;
 };
 
-const fetchSearchPage = async (page: number, recentOnly: boolean) => {
-  const url = buildSearchUrl({ page, recentOnly });
+const fetchSearchPage = async (
+  page: number,
+  recentOnly: boolean,
+  config?: WillhabenSearchConfig | null,
+) => {
+  const url = buildSearchUrl({ page, recentOnly, config });
   const response = await fetch(url, { headers: { "user-agent": "flatfinder" } });
   const html = await response.text();
   const json = extractNextData(html);
@@ -358,9 +532,46 @@ const fetchDetail = async (record: WillhabenRecord): Promise<WillhabenDetail | n
   if (!record.url) return null;
   const response = await fetch(record.url, { headers: { "user-agent": "flatfinder" } });
   const html = await response.text();
-  const json = extractNextData(html);
+  const redirectedUrl = response.url ?? "";
+  const expiredMatch =
+    redirectedUrl.match(/fromExpiredAdId=(\\d+)/i) ?? html.match(/fromExpiredAdId=(\\d+)/i);
+  if (expiredMatch) {
+    return {
+      expired: true,
+      expiredAdId: expiredMatch[1] ?? null,
+      advertStatus: {
+        id: "expired",
+        description: "Expired",
+        statusId: null,
+      },
+    };
+  }
+  let json: ReturnType<typeof extractNextData> | null = null;
+  try {
+    json = extractNextData(html);
+  } catch {
+    return {
+      expired: true,
+      expiredAdId: record.id,
+      advertStatus: {
+        id: "expired",
+        description: "Expired",
+        statusId: null,
+      },
+    };
+  }
   const details = json.props?.pageProps?.advertDetails;
-  if (!details) return null;
+  if (!details) {
+    return {
+      expired: true,
+      expiredAdId: record.id,
+      advertStatus: {
+        id: "expired",
+        description: "Expired",
+        statusId: null,
+      },
+    };
+  }
   const attrs = details.attributes?.attribute ?? [];
 
   const descriptionRaw =
@@ -375,10 +586,10 @@ const fetchDetail = async (record: WillhabenRecord): Promise<WillhabenDetail | n
       ? normalizeText(sellerProfile)
       : normalizeText(sellerProfile?.name);
   const sellerName = sellerProfileName ?? contactCompany ?? contactName ?? null;
-  const images =
-    details.advertImageList?.advertImage
-      ?.map((img) => img.mainImageUrl ?? null)
-      .filter((img): img is string => Boolean(img)) ?? [];
+  const createdDate = typeof details.createdDate === "string" ? details.createdDate : null;
+  const changedDate = typeof details.changedDate === "string" ? details.changedDate : null;
+  const advertStatus = details.advertStatus ?? null;
+  const images = collectImages(details.advertImageList?.advertImage ?? []);
   const costs = extractCosts(attrs);
 
   return {
@@ -391,12 +602,25 @@ const fetchDetail = async (record: WillhabenRecord): Promise<WillhabenDetail | n
     primaryCost: costs.primaryCost,
     primaryCostLabel: costs.primaryLabel,
     sellerName,
+    createdDate,
+    changedDate,
+    advertStatus,
+    expired: false,
+    expiredAdId: null,
   };
 };
 
-const applyDetail = (record: WillhabenRecord, detail: WillhabenDetail | null) => {
+const applyDetail = (
+  record: WillhabenRecord,
+  detail: WillhabenDetail | null,
+  checkedAt: string,
+) => {
   if (!detail) return;
   record.detail = detail;
+  if (detail.expired) {
+    record.advertStatus = "expired";
+    record.advertStatusDescription = detail.advertStatus?.description ?? "Expired";
+  }
   if (detail.images?.length) {
     record.images = detail.images;
     record.thumbnailUrl = detail.images[0] ?? record.thumbnailUrl;
@@ -417,6 +641,19 @@ const applyDetail = (record: WillhabenRecord, detail: WillhabenDetail | null) =>
       record.primaryCostLabel = detail.costs["Gesamtmiete"] ? "Gesamtmiete" : "Gesamtbelastung";
     }
   }
+  if (detail.createdDate) {
+    record.createdAt = detail.createdDate;
+  }
+  if (detail.changedDate) {
+    record.changedAt = detail.changedDate;
+  }
+  if (detail.advertStatus) {
+    record.advertStatus = detail.advertStatus.id ?? record.advertStatus ?? null;
+    record.advertStatusDescription =
+      detail.advertStatus.description ?? record.advertStatusDescription ?? null;
+    record.advertStatusId = detail.advertStatus.statusId ?? record.advertStatusId ?? null;
+  }
+  record.lastDetailCheckAt = checkedAt;
   record.totalCostValue = getTotalCostValue({
     primaryCost: record.primaryCost,
     costs: record.costs,
@@ -428,15 +665,23 @@ const buildRecords = async (
   state: FlatfinderState,
   now: string,
   keepExisting: boolean,
+  config?: WillhabenSearchConfig | null,
 ) => {
   const existing = new Map(state.willhaben.map((item) => [item.id, item]));
   const recordsInOrder: WillhabenRecord[] = [];
+  const newIds = new Set<string>();
 
   for (const summary of summaries) {
     const record = parseSummary(summary, existing, now);
     if (!record) continue;
     if (containsExcludedKeyword(record.title) || containsExcludedKeyword(record.location)) continue;
-    if (isOverMaxCost(record)) continue;
+    if (!matchesDistrict(record, config)) continue;
+    if (isOverMaxCost(record, config)) continue;
+    if (isUnderMinCost(record, config)) continue;
+    if (isOutsideArea(record, config)) continue;
+    if (!existing.has(record.id)) {
+      newIds.add(record.id);
+    }
 
     recordsInOrder.push(record);
   }
@@ -447,25 +692,51 @@ const buildRecords = async (
     merged = [...recordsInOrder, ...state.willhaben.filter((item) => !ids.has(item.id))];
   }
 
-  const missingDetails = merged.filter((item) => !item.detail && item.url);
-  if (missingDetails.length > 0) {
-    const queue = [...missingDetails];
+  const detailTargets = merged.filter((item) => newIds.has(item.id) && item.url);
+  if (detailTargets.length > 0) {
+    const queue = [...detailTargets];
+    const removed = new Set<string>();
     const workers = Array.from({ length: 3 }, async () => {
       while (queue.length > 0) {
         const item = queue.shift();
         if (!item) continue;
-        const detail = await fetchDetail(item);
-        applyDetail(item, detail);
-        if (isOverMaxCost(item)) {
-          const index = merged.findIndex((entry) => entry.id === item.id);
-          if (index >= 0) merged.splice(index, 1);
+        let detail: WillhabenDetail | null = null;
+        try {
+          detail = await fetchDetail(item);
+        } catch (error) {
+          console.warn(
+            "[willhaben] detail fetch failed:",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+        if (!detail) {
+          item.lastDetailCheckAt = now;
+          continue;
+        }
+        applyDetail(item, detail, now);
+        if (isOverMaxCost(item, config)) {
+          removed.add(item.id);
+          continue;
+        }
+        if (isUnderMinCost(item, config) || isOutsideArea(item, config)) {
+          removed.add(item.id);
+          continue;
+        }
+        if (!matchesDistrict(item, config)) {
+          removed.add(item.id);
           continue;
         }
         applyAutoHide(item, now);
         applySuppression(item, now);
+        if (!isAdvertActive(item.advertStatus ?? null)) {
+          removed.add(item.id);
+        }
       }
     });
     await Promise.all(workers);
+    if (removed.size > 0) {
+      merged = merged.filter((item) => !removed.has(item.id));
+    }
   }
 
   merged.forEach((record) => {
@@ -476,14 +747,61 @@ const buildRecords = async (
   return merged;
 };
 
-export const scrapeWillhaben = async (state: FlatfinderState, options: { recentOnly: boolean }) => {
+export const refreshWillhabenDetails = async (state: FlatfinderState) => {
+  const now = new Date().toISOString();
+  const nowMs = Date.now();
+  const dueItems = state.willhaben.filter((item) => shouldRefreshDetail(item, nowMs));
+  if (dueItems.length === 0) {
+    return { checked: 0, removed: 0 };
+  }
+
+  const queue = [...dueItems];
+  const removed = new Set<string>();
+  const workers = Array.from({ length: 3 }, async () => {
+    while (queue.length > 0) {
+      const item = queue.shift();
+      if (!item) continue;
+      let detail: WillhabenDetail | null = null;
+      try {
+        detail = await fetchDetail(item);
+      } catch (error) {
+        console.warn(
+          "[willhaben] detail refresh failed:",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      if (!detail) {
+        item.lastDetailCheckAt = now;
+        continue;
+      }
+      applyDetail(item, detail, now);
+      applyAutoHide(item, now);
+      applySuppression(item, now);
+      if (!isAdvertActive(item.advertStatus ?? null)) {
+        removed.add(item.id);
+      }
+    }
+  });
+  await Promise.all(workers);
+
+  if (removed.size > 0) {
+    state.willhaben = state.willhaben.filter((item) => !removed.has(item.id));
+  }
+  state.updatedAt = now;
+  return { checked: dueItems.length, removed: removed.size };
+};
+
+export const scrapeWillhaben = async (
+  state: FlatfinderState,
+  options: { recentOnly: boolean; config?: WillhabenSearchConfig | null },
+) => {
   const now = new Date().toISOString();
   let page = 1;
   let rowsFound = 0;
   const summaries: WillhabenSummary[] = [];
 
   while (true) {
-    const result = await fetchSearchPage(page, options.recentOnly);
+    const result = await fetchSearchPage(page, options.recentOnly, options.config);
     summaries.push(...result.summaries);
     rowsFound = result.rowsFound;
     if (result.rowsReturned < willhabenRowsPerPage) break;
@@ -491,7 +809,7 @@ export const scrapeWillhaben = async (state: FlatfinderState, options: { recentO
     page += 1;
   }
 
-  const merged = await buildRecords(summaries, state, now, options.recentOnly);
+  const merged = await buildRecords(summaries, state, now, true, options.config);
   state.willhaben = merged;
   state.updatedAt = now;
   state.lastWillhabenFetchAt = now;
