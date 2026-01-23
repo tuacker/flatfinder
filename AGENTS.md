@@ -8,3 +8,7 @@
 - Verify the project builds after changes (run the build when appropriate).
 - Runtime config lives in `src/scrapers/wohnberatung/config.ts` (no env overrides).
 - Do not preserve backwards compatibility unless explicitly requested.
+
+# ExecPlans
+
+When writing complex features or significant refactors, use an ExecPlan (as described in .agent/PLANS.md) from design to implementation.
