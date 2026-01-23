@@ -294,12 +294,15 @@ const main = async () => {
 
   let interestRefreshRunning = false;
   let interestRefreshTimer: NodeJS.Timeout | null = null;
+  let interestRefreshCooldownUntil = 0;
 
   scheduleInterestRefresh = () => {
     if (interestRefreshTimer) clearTimeout(interestRefreshTimer);
     const now = Date.now();
     const nextAt = getNextWatchAt([...state.wohnungen, ...state.planungsprojekte]);
-    const delay = nextAt === null ? INTEREST_REFRESH_INTERVAL_MS : Math.max(0, nextAt - now);
+    const scheduledAt = nextAt === null ? now + INTEREST_REFRESH_INTERVAL_MS : nextAt;
+    const effectiveAt = Math.max(scheduledAt, interestRefreshCooldownUntil);
+    const delay = Math.max(0, effectiveAt - now);
     interestRefreshTimer = setTimeout(() => {
       interestRefreshTimer = null;
       void runInterestRefresh();
@@ -439,7 +442,22 @@ const main = async () => {
           await persistState(nowStamp);
         }
       } catch (error) {
-        console.error("[interest-refresh]", error);
+        const cause =
+          error && typeof error === "object" && "cause" in error
+            ? (error as { cause?: unknown }).cause
+            : undefined;
+        const code =
+          cause && typeof cause === "object" && "code" in cause
+            ? String((cause as { code?: unknown }).code)
+            : undefined;
+        if (code === "ENOTFOUND" || code === "ECONNRESET" || code === "ETIMEDOUT") {
+          interestRefreshCooldownUntil = Date.now() + 60_000;
+        }
+        console.error(
+          "[interest-refresh]",
+          error instanceof Error ? error.message : error,
+          code ? `(${code})` : "",
+        );
       } finally {
         interestRefreshRunning = false;
         scheduleInterestRefresh();
