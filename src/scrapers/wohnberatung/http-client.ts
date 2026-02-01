@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
-import { baseUrl, storageStatePath } from "./config.js";
+import { fetchWithTimeout } from "../../shared/http.js";
+import { baseUrl, storageStatePath, wohnberatungRequestTimeoutMs } from "./config.js";
 
 export type HttpClient = {
   fetchHtml: (url: string, options?: RequestInit) => Promise<string>;
@@ -43,10 +44,11 @@ export const createHttpClient = async (): Promise<HttpClient> => {
   };
 
   const fetchHtml = async (url: string, options: RequestInit = {}) => {
-    const response = await fetch(url, {
+    const response = await fetchWithTimeout(url, {
       redirect: "follow",
       ...options,
       headers: buildHeaders(options.headers),
+      timeoutMs: wohnberatungRequestTimeoutMs,
     });
 
     if (!response.ok) {
@@ -57,10 +59,11 @@ export const createHttpClient = async (): Promise<HttpClient> => {
   };
 
   const download = async (url: string, options: RequestInit = {}) => {
-    const response = await fetch(url, {
+    const response = await fetchWithTimeout(url, {
       redirect: "follow",
       ...options,
       headers: buildHeaders(options.headers),
+      timeoutMs: wohnberatungRequestTimeoutMs,
     });
 
     if (!response.ok) {

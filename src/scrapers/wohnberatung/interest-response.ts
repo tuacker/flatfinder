@@ -4,6 +4,7 @@ export const detectInterestResult = (html: string): InterestResult => {
   if (/Sie haben sich unverbindlich angemeldet/i.test(html)) return "signed";
   if (/kein Interesse mehr/i.test(html)) return "signed";
   if (/maximale Anzahl an Interessent/i.test(html)) return "full";
+  if (/max erreicht/i.test(html)) return "full";
   if (/maximale Anzahl.*Anmeld/i.test(html)) return "limit";
   if (/nur\s*3\s*Wohnung/i.test(html)) return "limit";
   if (/bereits\s*3\s*Wohnung/i.test(html)) return "limit";
@@ -18,5 +19,4 @@ export const detectSignedFromResponse = (html: string) => {
   return null;
 };
 
-export const isSignupAvailable = (html: string) =>
-  /unverbindlich anmelden/i.test(html) && !/maximale Anzahl an Interessent/i.test(html);
+export const isSignupAvailable = (html: string) => detectInterestResult(html) === "available";

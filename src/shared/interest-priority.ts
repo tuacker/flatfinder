@@ -21,6 +21,11 @@ export const comparePriority = (left: InterestPriorityItem, right: InterestPrior
   if (leftPriority.bucket !== rightPriority.bucket) {
     return leftPriority.bucket - rightPriority.bucket;
   }
+  if (leftPriority.bucket === 1) {
+    if (leftPriority.value < rightPriority.value) return 1;
+    if (leftPriority.value > rightPriority.value) return -1;
+    return 0;
+  }
   if (leftPriority.value < rightPriority.value) return -1;
   if (leftPriority.value > rightPriority.value) return 1;
   return 0;

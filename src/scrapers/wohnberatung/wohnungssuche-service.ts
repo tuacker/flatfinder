@@ -15,6 +15,9 @@ import { parseWohnungDetail } from "./parse-wohnung-detail.js";
 import { parseWohnungenList, type WohnungListItem } from "./parse-wohnungen-list.js";
 import type { FlatfinderState, WohnungRecord } from "./state.js";
 import type { RateLimiter } from "./rate-limiter.js";
+import { isLoginPage } from "./wohnberatung-client.js";
+import type { ScrapeResult } from "./scrape-result.js";
+import { getErrorMessage, isTransientError } from "../../shared/errors.js";
 
 type WohnungssucheTarget = {
   source: "gefoerdert" | "gemeinde";
@@ -41,8 +44,14 @@ const parseCount = (value: string | null) => {
   return match ? Number(match[0]) : 0;
 };
 
-const titleForWohnung = (item: { postalCode: string | null; address: string | null }) =>
-  normalize([item.postalCode, item.address].filter(Boolean).join(" "));
+const isAuthErrorMessage = (message: string) =>
+  message.includes("Login required.") || message.includes("Suchprofil form not found");
+
+const titleForWohnung = (item: {
+  postalCode: string | null;
+  address: string | null;
+  foerderungstyp: string | null;
+}) => normalize([item.postalCode, item.address, item.foerderungstyp].filter(Boolean).join(" "));
 
 const downloadAsset = async (
   downloader: (url: string) => Promise<Buffer | null>,
@@ -84,12 +93,20 @@ const extractTarget = (
   };
 };
 
-const fetchWohnungssucheTargets = async (client: HttpClient) => {
+const fetchWohnungssucheTargets = async (client: HttpClient, rateLimiter: RateLimiter) => {
   const suchprofilHtml = await client.fetchHtml(suchprofilUrl);
+  if (isLoginPage(suchprofilHtml)) {
+    throw new Error("Login required.");
+  }
   const form = parseSuchprofilForm(suchprofilHtml);
 
   if (form.method !== "post") {
     throw new Error(`Unexpected form method: ${form.method}`);
+  }
+
+  if (!rateLimiter.canConsume(wohnungssuchePreviewCost)) {
+    console.warn("Wohnungssuche skipped: monthly rate limit reached.");
+    return null;
   }
 
   const overviewHtml = await client.fetchHtml(form.action, {
@@ -101,6 +118,15 @@ const fetchWohnungssucheTargets = async (client: HttpClient) => {
     body: form.fields.toString(),
   });
 
+  if (isLoginPage(overviewHtml)) {
+    throw new Error("Login required.");
+  }
+
+  if (!rateLimiter.consume(wohnungssuchePreviewCost)) {
+    console.warn("Wohnungssuche skipped: monthly rate limit reached.");
+    return null;
+  }
+
   const $ = load(overviewHtml);
   return [extractTarget($, "gefoerdert", "gefoerdert"), extractTarget($, "gemeinde", "gemeinde")];
 };
@@ -109,6 +135,9 @@ const ensureDetail = async (record: WohnungRecord, client: HttpClient) => {
   if (record.detail) return record.detail;
   if (!record.url) return null;
   const detailHtml = await client.fetchHtml(record.url);
+  if (isLoginPage(detailHtml)) {
+    throw new Error("Login required.");
+  }
   record.detail = parseWohnungDetail(detailHtml);
   return record.detail;
 };
@@ -147,15 +176,53 @@ const buildRecord = (
   telegramNotifiedAt: previous?.telegramNotifiedAt ?? null,
 });
 
-export const scrapeWohnungen = async (state: FlatfinderState, rateLimiter: RateLimiter) => {
-  if (!rateLimiter.consume(wohnungssuchePreviewCost)) {
-    console.warn("Wohnungssuche skipped: monthly rate limit reached.");
-    return;
+export const scrapeWohnungen = async (
+  state: FlatfinderState,
+  rateLimiter: RateLimiter,
+): Promise<ScrapeResult> => {
+  if (state.wohnberatungAuthError) {
+    return { status: "auth-error", updated: false, message: state.wohnberatungAuthError };
   }
-
-  const client = await createHttpClient();
+  let client: HttpClient;
+  try {
+    client = await createHttpClient();
+  } catch (error) {
+    const message = getErrorMessage(error);
+    state.wohnberatungAuthError = "Login required.";
+    state.nextWohnungenRetryAt = null;
+    state.nextPlanungsprojekteRetryAt = null;
+    console.warn("[wohnungen]", message);
+    return { status: "auth-error", updated: false, message };
+  }
   const now = new Date().toISOString();
-  const targets = await fetchWohnungssucheTargets(client);
+  let targets: WohnungssucheTarget[] | null = null;
+  try {
+    targets = await fetchWohnungssucheTargets(client, rateLimiter);
+  } catch (error) {
+    const message = getErrorMessage(error);
+    const isAuthError = isAuthErrorMessage(message);
+    if (isAuthError) {
+      const changed = state.wohnberatungAuthError !== "Login required.";
+      state.wohnberatungAuthError = "Login required.";
+      state.nextWohnungenRetryAt = null;
+      state.nextPlanungsprojekteRetryAt = null;
+      state.updatedAt = now;
+      if (changed) {
+        console.warn("[wohnungen]", message);
+      }
+    } else {
+      if (isTransientError(error)) {
+        state.nextWohnungenRetryAt = new Date(Date.now() + 60_000).toISOString();
+      }
+      console.warn("[wohnungen]", message);
+    }
+    return { status: isAuthError ? "auth-error" : "temp-error", updated: false, message };
+  }
+  if (!targets) {
+    return { status: "skipped", updated: false, message: "Rate limit reached." };
+  }
+  state.wohnberatungAuthError = null;
+  state.nextWohnungenRetryAt = null;
 
   const sourcesSkipped = new Set<WohnungRecord["source"]>();
   const existing = new Map(
@@ -163,6 +230,7 @@ export const scrapeWohnungen = async (state: FlatfinderState, rateLimiter: RateL
   );
   const next: WohnungRecord[] = [];
   let didUpdate = false;
+  let hadTransientError = false;
 
   for (const target of targets) {
     if (!target.href) continue;
@@ -179,8 +247,39 @@ export const scrapeWohnungen = async (state: FlatfinderState, rateLimiter: RateL
       continue;
     }
 
-    const listHtml = await client.fetchHtml(absoluteUrl(target.href)!);
-    const items = parseWohnungenList(listHtml);
+    let listHtml: string;
+    try {
+      listHtml = await client.fetchHtml(absoluteUrl(target.href)!);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      if (isTransientError(error)) {
+        state.nextWohnungenRetryAt = new Date(Date.now() + 60_000).toISOString();
+        hadTransientError = true;
+      }
+      console.warn("[wohnungen]", message);
+      sourcesSkipped.add(target.source);
+      continue;
+    }
+    if (isLoginPage(listHtml)) {
+      state.wohnberatungAuthError = "Login required.";
+      state.nextWohnungenRetryAt = null;
+      state.nextPlanungsprojekteRetryAt = null;
+      return { status: "auth-error", updated: false, message: "Login required." };
+    }
+
+    let items: WohnungListItem[] = [];
+    try {
+      items = parseWohnungenList(listHtml);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      if (isTransientError(error)) {
+        state.nextWohnungenRetryAt = new Date(Date.now() + 60_000).toISOString();
+        hadTransientError = true;
+      }
+      console.warn("[wohnungen]", message);
+      sourcesSkipped.add(target.source);
+      continue;
+    }
     didUpdate = true;
 
     for (const item of items) {
@@ -188,11 +287,35 @@ export const scrapeWohnungen = async (state: FlatfinderState, rateLimiter: RateL
       if (hasExcludedKeyword(titleForWohnung(item))) continue;
 
       const record = buildRecord(item, target.source, existing.get(item.id), now);
-      const detail = await ensureDetail(record, client);
-      if (!detail) continue;
-      if (detail.superfoerderung?.toLowerCase() === "ja") continue;
+      let detail: Awaited<ReturnType<typeof ensureDetail>> | null = record.detail ?? null;
+      try {
+        detail = await ensureDetail(record, client);
+      } catch (error) {
+        const message = getErrorMessage(error);
+        if (isAuthErrorMessage(message)) {
+          state.wohnberatungAuthError = "Login required.";
+          state.nextWohnungenRetryAt = null;
+          state.nextPlanungsprojekteRetryAt = null;
+          return { status: "auth-error", updated: false, message };
+        }
+        if (isTransientError(error)) {
+          state.nextWohnungenRetryAt = new Date(Date.now() + 60_000).toISOString();
+          hadTransientError = true;
+        }
+        console.warn("[wohnungen]", message);
+      }
+      if (detail && detail.superfoerderung?.toLowerCase() === "ja") continue;
 
-      await ensureAssets(record, client);
+      try {
+        await ensureAssets(record, client);
+      } catch (error) {
+        const message = getErrorMessage(error);
+        if (isTransientError(error)) {
+          state.nextWohnungenRetryAt = new Date(Date.now() + 60_000).toISOString();
+          hadTransientError = true;
+        }
+        console.warn("[wohnungen]", message);
+      }
       next.push(record);
     }
   }
@@ -202,4 +325,10 @@ export const scrapeWohnungen = async (state: FlatfinderState, rateLimiter: RateL
     state.wohnungen = [...preserved, ...next];
     state.updatedAt = now;
   }
+  if (hadTransientError && !state.wohnberatungAuthError) {
+    state.nextWohnungenRetryAt = new Date(Date.now() + 60_000).toISOString();
+  }
+
+  const status = hadTransientError && !didUpdate ? "temp-error" : "ok";
+  return { status, updated: didUpdate, message: null };
 };

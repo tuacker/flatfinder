@@ -12,7 +12,10 @@ import {
   willhabenRowsPerPage,
   willhabenSearchUrl,
   willhabenViennaAreaId,
+  willhabenRequestTimeoutMs,
 } from "./config.js";
+import { fetchWithTimeout } from "../../shared/http.js";
+import { formatCurrency, parseArea, parseCurrency } from "../../shared/parsing.js";
 import type {
   FlatfinderState,
   WillhabenDetail,
@@ -38,6 +41,12 @@ type WillhabenSummary = {
       referenceImageUrl?: string | null;
     }>;
   };
+};
+
+export type WillhabenScrapeResult = {
+  ok: boolean;
+  updated: boolean;
+  message?: string | null;
 };
 
 const normalizeText = (value: string | null | undefined) =>
@@ -163,7 +172,7 @@ const extractCosts = (attrs: WillhabenAttribute[]) => {
     const value = attr.values?.[0];
     if (!value) continue;
     const label = costLabelOverrides[attr.name] ?? humanizeCostLabel(attr.name);
-    const normalized = formatCurrencyValue(value) ?? value;
+    const normalized = formatCurrency(value) ?? value;
     if (!costs.has(label)) {
       costs.set(label, normalized);
     }
@@ -178,53 +187,6 @@ const extractCosts = (attrs: WillhabenAttribute[]) => {
     primaryCost,
     primaryLabel,
   };
-};
-
-const parseCurrencyValue = (value: string | null | undefined) => {
-  if (!value) return null;
-  if (/[a-zäöü]/i.test(value) && !/\b(eur|euro)\b/i.test(value)) {
-    return null;
-  }
-  const cleaned = value.replace(/[^\d.,]/g, "");
-  if (!cleaned) return null;
-  const hasComma = cleaned.includes(",");
-  const hasDot = cleaned.includes(".");
-  let normalized = cleaned;
-  if (hasComma && hasDot) {
-    const lastComma = cleaned.lastIndexOf(",");
-    const lastDot = cleaned.lastIndexOf(".");
-    if (lastComma > lastDot) {
-      normalized = cleaned.replace(/\./g, "").replace(",", ".");
-    } else {
-      normalized = cleaned.replace(/,/g, "");
-    }
-  } else if (hasComma) {
-    normalized = cleaned.replace(",", ".");
-  }
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : null;
-};
-
-const parseNumericValue = (value: string | null | undefined) => {
-  if (!value) return null;
-  const cleaned = value.replace(/[^\d.,]/g, "");
-  if (!cleaned) return null;
-  const hasComma = cleaned.includes(",");
-  const hasDot = cleaned.includes(".");
-  let normalized = cleaned;
-  if (hasComma && hasDot) {
-    const lastComma = cleaned.lastIndexOf(",");
-    const lastDot = cleaned.lastIndexOf(".");
-    if (lastComma > lastDot) {
-      normalized = cleaned.replace(/\./g, "").replace(",", ".");
-    } else {
-      normalized = cleaned.replace(/,/g, "");
-    }
-  } else if (hasComma) {
-    normalized = cleaned.replace(",", ".");
-  }
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : null;
 };
 
 const extractDistrictCode = (value: string | null | undefined) => {
@@ -257,12 +219,6 @@ const matchesDistrict = (
   return selected.includes(normalized);
 };
 
-const formatCurrencyValue = (value: string | null | undefined) => {
-  const numeric = parseCurrencyValue(value);
-  if (numeric === null) return null;
-  return new Intl.NumberFormat("de-AT", { style: "currency", currency: "EUR" }).format(numeric);
-};
-
 const isIgnored = (record: { hiddenAt?: string | null; suppressed?: boolean | null }) =>
   Boolean(record.hiddenAt || record.suppressed);
 
@@ -290,17 +246,17 @@ const pickTotalCostValue = (record: {
   primaryCost?: string | null;
   costs?: Record<string, string>;
 }) => {
-  const primary = parseCurrencyValue(record.primaryCost);
+  const primary = parseCurrency(record.primaryCost);
   if (primary !== null) return primary;
   const costs = record.costs ?? {};
   const preferred = ["Gesamtmiete", "Gesamtbelastung", "Miete (brutto)", "Miete (netto)", "Preis"];
   for (const label of preferred) {
-    const value = parseCurrencyValue(costs[label]);
+    const value = parseCurrency(costs[label]);
     if (value !== null) return value;
   }
   for (const [label, value] of Object.entries(costs)) {
     if (!/miete|gesamt|preis/i.test(label)) continue;
-    const parsed = parseCurrencyValue(value);
+    const parsed = parseCurrency(value);
     if (parsed !== null) return parsed;
   }
   return null;
@@ -335,7 +291,7 @@ const isOutsideArea = (record: { size?: string | null }, config?: WillhabenSearc
   const min = config?.minArea ?? null;
   const max = config?.maxArea ?? null;
   if (min === null && max === null) return false;
-  const value = parseNumericValue(record.size ?? null);
+  const value = parseArea(record.size ?? null);
   if (value === null) return false;
   if (min !== null && value < min) return true;
   if (max !== null && value > max) return true;
@@ -516,7 +472,13 @@ const fetchSearchPage = async (
   config?: WillhabenSearchConfig | null,
 ) => {
   const url = buildSearchUrl({ page, recentOnly, config });
-  const response = await fetch(url, { headers: { "user-agent": "flatfinder" } });
+  const response = await fetchWithTimeout(url, {
+    headers: { "user-agent": "flatfinder" },
+    timeoutMs: willhabenRequestTimeoutMs,
+  });
+  if (!response.ok) {
+    throw new Error(`Willhaben search failed (${response.status}) ${url}`);
+  }
   const html = await response.text();
   const json = extractNextData(html);
   const result = json.props?.pageProps?.searchResult;
@@ -530,11 +492,17 @@ const fetchSearchPage = async (
 
 const fetchDetail = async (record: WillhabenRecord): Promise<WillhabenDetail | null> => {
   if (!record.url) return null;
-  const response = await fetch(record.url, { headers: { "user-agent": "flatfinder" } });
+  const response = await fetchWithTimeout(record.url, {
+    headers: { "user-agent": "flatfinder" },
+    timeoutMs: willhabenRequestTimeoutMs,
+  });
+  if (!response.ok) {
+    throw new Error(`Willhaben detail failed (${response.status}) ${record.url}`);
+  }
   const html = await response.text();
   const redirectedUrl = response.url ?? "";
   const expiredMatch =
-    redirectedUrl.match(/fromExpiredAdId=(\\d+)/i) ?? html.match(/fromExpiredAdId=(\\d+)/i);
+    redirectedUrl.match(/fromExpiredAdId=(\d+)/i) ?? html.match(/fromExpiredAdId=(\d+)/i);
   if (expiredMatch) {
     return {
       expired: true,
@@ -546,31 +514,18 @@ const fetchDetail = async (record: WillhabenRecord): Promise<WillhabenDetail | n
       },
     };
   }
-  let json: ReturnType<typeof extractNextData> | null = null;
+  let json: ReturnType<typeof extractNextData>;
   try {
     json = extractNextData(html);
-  } catch {
-    return {
-      expired: true,
-      expiredAdId: record.id,
-      advertStatus: {
-        id: "expired",
-        description: "Expired",
-        statusId: null,
-      },
-    };
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : "Willhaben detail parse failed.");
   }
   const details = json.props?.pageProps?.advertDetails;
   if (!details) {
-    return {
-      expired: true,
-      expiredAdId: record.id,
-      advertStatus: {
-        id: "expired",
-        description: "Expired",
-        statusId: null,
-      },
-    };
+    const snippet = html.replace(/\s+/g, " ").slice(0, 500);
+    throw new Error(
+      `Willhaben detail missing payload (${response.status}) ${response.url}. Snippet: ${snippet}`,
+    );
   }
   const attrs = details.attributes?.attribute ?? [];
 
@@ -710,7 +665,6 @@ const buildRecords = async (
           );
         }
         if (!detail) {
-          item.lastDetailCheckAt = now;
           continue;
         }
         applyDetail(item, detail, now);
@@ -752,15 +706,21 @@ export const refreshWillhabenDetails = async (state: FlatfinderState) => {
   const nowMs = Date.now();
   const dueItems = state.willhaben.filter((item) => shouldRefreshDetail(item, nowMs));
   if (dueItems.length === 0) {
-    return { checked: 0, removed: 0 };
+    return { checked: 0, removed: 0, updated: false };
   }
 
   const queue = [...dueItems];
   const removed = new Set<string>();
+  let didUpdate = false;
   const workers = Array.from({ length: 3 }, async () => {
     while (queue.length > 0) {
       const item = queue.shift();
       if (!item) continue;
+      if (!item.url) {
+        item.lastDetailCheckAt = now;
+        didUpdate = true;
+        continue;
+      }
       let detail: WillhabenDetail | null = null;
       try {
         detail = await fetchDetail(item);
@@ -771,12 +731,12 @@ export const refreshWillhabenDetails = async (state: FlatfinderState) => {
         );
       }
       if (!detail) {
-        item.lastDetailCheckAt = now;
         continue;
       }
       applyDetail(item, detail, now);
       applyAutoHide(item, now);
       applySuppression(item, now);
+      didUpdate = true;
       if (!isAdvertActive(item.advertStatus ?? null)) {
         removed.add(item.id);
       }
@@ -786,31 +746,46 @@ export const refreshWillhabenDetails = async (state: FlatfinderState) => {
 
   if (removed.size > 0) {
     state.willhaben = state.willhaben.filter((item) => !removed.has(item.id));
+    didUpdate = true;
   }
-  state.updatedAt = now;
-  return { checked: dueItems.length, removed: removed.size };
+  if (didUpdate) {
+    state.updatedAt = now;
+  }
+  return { checked: dueItems.length, removed: removed.size, updated: didUpdate };
 };
 
 export const scrapeWillhaben = async (
   state: FlatfinderState,
   options: { recentOnly: boolean; config?: WillhabenSearchConfig | null },
-) => {
+): Promise<WillhabenScrapeResult> => {
   const now = new Date().toISOString();
   let page = 1;
   let rowsFound = 0;
   const summaries: WillhabenSummary[] = [];
 
-  while (true) {
-    const result = await fetchSearchPage(page, options.recentOnly, options.config);
-    summaries.push(...result.summaries);
-    rowsFound = result.rowsFound;
-    if (result.rowsReturned < willhabenRowsPerPage) break;
-    if (page * willhabenRowsPerPage >= rowsFound) break;
-    page += 1;
+  try {
+    while (true) {
+      const result = await fetchSearchPage(page, options.recentOnly, options.config);
+      summaries.push(...result.summaries);
+      rowsFound = result.rowsFound;
+      if (result.rowsReturned < willhabenRowsPerPage) break;
+      if (page * willhabenRowsPerPage >= rowsFound) break;
+      page += 1;
+    }
+  } catch (error) {
+    console.warn(
+      "[willhaben] search failed:",
+      error instanceof Error ? error.message : String(error),
+    );
+    return {
+      ok: false,
+      updated: false,
+      message: error instanceof Error ? error.message : String(error),
+    };
   }
 
   const merged = await buildRecords(summaries, state, now, true, options.config);
   state.willhaben = merged;
   state.updatedAt = now;
-  state.lastWillhabenFetchAt = now;
+  return { ok: true, updated: true, message: null };
 };

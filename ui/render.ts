@@ -7,11 +7,15 @@ import type {
   WillhabenRecord,
 } from "../src/scrapers/wohnberatung/state.js";
 import { comparePriority } from "../src/shared/interest-priority.js";
+import { formatCurrency, parseArea, parseCurrency } from "../src/shared/parsing.js";
 import { formatRefreshLeft, formatTimeLeft } from "./time.js";
 
 export type RenderOptions = {
   wohnberatungNextRefreshAt: number;
   willhabenNextRefreshAt: number;
+  wohnberatungWohnungenIntervalMs: number;
+  wohnberatungPlanungsprojekteIntervalMs: number;
+  wohnberatungAuthError: string | null;
   sourceFilter?: SourceFilter;
   willhabenFilters?: WillhabenFilters;
   willhabenConfig?: WillhabenSearchConfig | null;
@@ -21,6 +25,9 @@ export type RenderFragments = {
   updatedAt: string | null;
   wohnberatungNextRefreshAt: number;
   willhabenNextRefreshAt: number;
+  wohnberatungWohnungenIntervalMs: number;
+  wohnberatungPlanungsprojekteIntervalMs: number;
+  wohnberatungAuthError: string | null;
   rateLimitCount: number;
   rateLimitMonthly: number;
   sections: {
@@ -91,35 +98,11 @@ const cleanValue = (value: string | null) => {
   return value.replace(/^[^0-9€]+:?\s*/i, "").trim();
 };
 
-const parseCurrency = (value: string | null | undefined) => {
-  if (!value) return null;
-  const cleaned = value
-    .replace(/[^\d.,]/g, "")
-    .replace(/\./g, "")
-    .replace(",", ".");
-  const parsed = Number(cleaned);
-  return Number.isFinite(parsed) ? parsed : null;
-};
-
-const parseNumeric = (value: string | null | undefined) => {
-  if (!value) return null;
-  const cleaned = value.replace(/[^\d.,]/g, "").replace(",", ".");
-  const parsed = Number(cleaned);
-  return Number.isFinite(parsed) ? parsed : null;
-};
-
 const extractDistrictCode = (value: string | null | undefined) => {
   if (!value) return null;
   const match = value.match(/\b(0?[1-9]|1[0-9])\.?\s*Bezirk/i);
   if (match) return match[1].padStart(2, "0");
   return null;
-};
-
-const formatCurrency = (value: string | number | null | undefined) => {
-  if (value === null || value === undefined) return null;
-  const numeric = typeof value === "number" ? value : parseCurrency(value);
-  if (numeric === null) return null;
-  return new Intl.NumberFormat("de-AT", { style: "currency", currency: "EUR" }).format(numeric);
 };
 
 const buildMapEmbedUrl = (mapUrl: string | null) => {
@@ -488,8 +471,8 @@ const renderWillhabenRow = (item: WillhabenRecord) => {
   const isSeen = Boolean(item.seenAt);
   const districtCode =
     extractDistrictCode(item.district ?? null) ?? extractDistrictCode(item.location ?? null) ?? "";
-  const roomsValue = parseNumeric(item.rooms)?.toString() ?? "";
-  const areaValue = parseNumeric(item.size)?.toString() ?? "";
+  const roomsValue = parseArea(item.rooms)?.toString() ?? "";
+  const areaValue = parseArea(item.size)?.toString() ?? "";
   const priceValue = item.totalCostValue ?? parseCurrency(item.primaryCost);
   const visibilityLabel = renderVisibilityLabel(isHidden);
   const seenButton = !isSeen
@@ -622,7 +605,6 @@ const renderHiddenSection = (items: string[], count: number) => {
 
 const renderTelegramSettings = (config: TelegramConfig | null | undefined) => {
   const enabled = config?.enabled ? "checked" : "";
-  const includeImages = config?.includeImages !== false ? "checked" : "";
   const enableActions = config?.enableActions ? "checked" : "";
   const pollingEnabled = config?.pollingEnabled ? "checked" : "";
   const botToken = escapeHtml(config?.botToken ?? "");
@@ -651,10 +633,6 @@ const renderTelegramSettings = (config: TelegramConfig | null | undefined) => {
           <input type="text" id="telegram-chat-id" value="${chatId}" placeholder="e.g. 123456789" />
         </label>
         <label class="settings-field">
-          <span>Include images</span>
-          <input type="checkbox" id="telegram-include-images" ${includeImages} />
-        </label>
-        <label class="settings-field">
           <span>Enable actions</span>
           <input type="checkbox" id="telegram-enable-actions" ${enableActions} />
         </label>
@@ -674,6 +652,21 @@ const renderTelegramSettings = (config: TelegramConfig | null | undefined) => {
     </div>
   `;
 };
+
+const renderWohnberatungSettings = () => `
+  <div class="settings-card" id="wohnberatung-settings">
+    <div class="settings-header">
+      <h2>Wohnberatung login</h2>
+      <div class="settings-actions">
+        <button class="btn btn-primary" id="wohnberatung-login">Start login</button>
+      </div>
+    </div>
+    <div class="settings-hint">
+      Opens a browser window on the server machine to complete the login.
+    </div>
+    <div class="settings-status" id="wohnberatung-login-status"></div>
+  </div>
+`;
 
 const renderWillhabenSettings = (config: WillhabenSearchConfig | null | undefined) => {
   const minArea = config?.minArea ?? "";
@@ -773,6 +766,7 @@ const renderSettingsSection = (
 ) => `
   <div id="settings-section" class="section" data-view-group="settings">
     <h2>Settings</h2>
+    ${renderWohnberatungSettings()}
     ${renderTelegramSettings(config)}
     ${renderWillhabenSettings(willhabenConfig)}
   </div>
@@ -809,15 +803,8 @@ const renderSubsection = (
   `;
 };
 
-const sortSeenLast = <T extends { seenAt?: string | null }>(items: T[]) => {
-  const unseen = items.filter((item) => !item.seenAt);
-  const seen = items.filter((item) => item.seenAt);
-  return [...unseen, ...seen];
-};
-
 const sortByRank = <
   T extends {
-    lastSeenAt: string;
     interest?: { rank?: number | null; requestedAt?: string | null };
   },
 >(
@@ -826,7 +813,9 @@ const sortByRank = <
   [...items].sort((a, b) => {
     const priority = comparePriority(a, b);
     if (priority !== 0) return priority;
-    return b.lastSeenAt.localeCompare(a.lastSeenAt);
+    const leftRequestedAt = a.interest?.requestedAt ?? "";
+    const rightRequestedAt = b.interest?.requestedAt ?? "";
+    return rightRequestedAt.localeCompare(leftRequestedAt);
   });
 
 const buildSections = (
@@ -865,7 +854,7 @@ const buildSections = (
       if (!activeWillhabenFilters.districts.includes(districtCode)) return false;
     }
     if (activeWillhabenFilters.rooms.length > 0) {
-      const roomsValue = parseNumeric(item.rooms)?.toString() ?? "";
+      const roomsValue = parseArea(item.rooms)?.toString() ?? "";
       if (!roomsValue) return false;
       const roomsCount = Number(roomsValue);
       const matches = activeWillhabenFilters.rooms.some((value) => {
@@ -884,20 +873,18 @@ const buildSections = (
             (a.totalCostValue ?? parseCurrency(a.primaryCost) ?? Infinity) -
             (b.totalCostValue ?? parseCurrency(b.primaryCost) ?? Infinity)
         : (a: WillhabenRecord, b: WillhabenRecord) =>
-            (parseNumeric(a.size) ?? Infinity) - (parseNumeric(b.size) ?? Infinity);
+            (parseArea(a.size) ?? Infinity) - (parseArea(b.size) ?? Infinity);
     sortedWillhaben.sort((a, b) =>
       activeWillhabenFilters.sortDir === "desc" ? comparator(b, a) : comparator(a, b),
     );
   }
   const hiddenWillhaben = state.willhaben.filter((item) => item.hiddenAt && !item.suppressed);
 
-  const wohnungen = sortSeenLast(visibleWohnungen).map((item) =>
-    renderWohnungRow(item, { showCountdown: true }),
-  );
-  const planungsprojekte = sortSeenLast(visiblePlanungsprojekte).map((item) =>
+  const wohnungen = visibleWohnungen.map((item) => renderWohnungRow(item, { showCountdown: true }));
+  const planungsprojekte = visiblePlanungsprojekte.map((item) =>
     renderPlanungsprojektRow(item, { showCountdown: true }),
   );
-  const willhaben = sortSeenLast(sortedWillhaben).map((item) => renderWillhabenRow(item));
+  const willhaben = sortedWillhaben.map((item) => renderWillhabenRow(item));
   const willhabenDistricts = Array.from(
     new Set(
       state.willhaben
@@ -942,11 +929,9 @@ const buildSections = (
   const wohnungenCount = wohnungen.length;
   const planungsprojekteCount = planungsprojekte.length;
   const willhabenCount = willhaben.length;
-  const interestedWillhaben = sortSeenLast(
-    state.willhaben.filter(
-      (item) => !item.hiddenAt && item.interest?.requestedAt && !item.suppressed,
-    ),
-  ).map((item) => renderWillhabenRow(item));
+  const interestedWillhaben = state.willhaben
+    .filter((item) => !item.hiddenAt && item.interest?.requestedAt && !item.suppressed)
+    .map((item) => renderWillhabenRow(item));
 
   const interestedSection = `
     <div class="section" id="interested-section" data-view-group="interested">
@@ -976,6 +961,10 @@ const buildSections = (
     districts: willhabenDistricts,
     filters: activeWillhabenFilters,
   });
+  const willhabenContent =
+    willhaben.length > 0
+      ? [willhabenControls, ...willhaben]
+      : [willhabenControls, '<div class="empty">No results</div>'];
 
   return {
     hiddenSection: renderHiddenSection(hiddenRows, hiddenCount),
@@ -997,7 +986,7 @@ const buildSections = (
     ),
     willhabenSection: renderSection(
       `Willhaben (${willhabenCount})`,
-      [willhabenControls, ...willhaben],
+      willhabenContent,
       "willhaben-list",
       "willhaben-section",
       "root",
@@ -1024,6 +1013,9 @@ export const renderFragments = (
     updatedAt: state.updatedAt ?? null,
     wohnberatungNextRefreshAt: options.wohnberatungNextRefreshAt,
     willhabenNextRefreshAt: options.willhabenNextRefreshAt,
+    wohnberatungWohnungenIntervalMs: options.wohnberatungWohnungenIntervalMs,
+    wohnberatungPlanungsprojekteIntervalMs: options.wohnberatungPlanungsprojekteIntervalMs,
+    wohnberatungAuthError: options.wohnberatungAuthError,
     rateLimitCount: state.rateLimit.count,
     rateLimitMonthly,
     sections: {
@@ -1051,6 +1043,7 @@ export const renderPage = (
   );
 
   const updatedAt = state.updatedAt ?? "";
+  const authError = options.wohnberatungAuthError;
   return `
     <!doctype html>
     <html lang="de">
@@ -1061,7 +1054,7 @@ export const renderPage = (
         <link rel="stylesheet" href="/app.css" />
         <script src="/app.js" type="module" defer></script>
       </head>
-      <body data-updated-at="${updatedAt}" data-next-refresh-wohnberatung="${options.wohnberatungNextRefreshAt}" data-next-refresh-willhaben="${options.willhabenNextRefreshAt}" data-view="root" data-source="${sourceFilter}">
+      <body data-updated-at="${updatedAt}" data-next-refresh-wohnberatung="${options.wohnberatungNextRefreshAt}" data-next-refresh-willhaben="${options.willhabenNextRefreshAt}" data-ww-interval-wohnungen="${options.wohnberatungWohnungenIntervalMs}" data-ww-interval-planungsprojekte="${options.wohnberatungPlanungsprojekteIntervalMs}" data-view="root" data-source="${sourceFilter}">
         <div class="header">
         <div class="header-row">
             <div class="header-title">
@@ -1074,7 +1067,7 @@ export const renderPage = (
             </div>
             <div class="header-status">
               <div class="status-line">
-                Willhaben <span id="next-refresh-willhaben"></span> / WW <span id="next-refresh-wohnberatung"></span> &middot; <span id="rate-count">${state.rateLimit.count}</span>/<span id="rate-limit">${rateLimitMonthly}</span>
+                Willhaben <span id="next-refresh-willhaben"></span> / WW <span id="next-refresh-wohnberatung"></span> (<span id="ww-intervals"></span>) &middot; <span id="rate-count">${state.rateLimit.count}</span>/<span id="rate-limit">${rateLimitMonthly}</span><span id="ww-auth-status" class="status-warning">${authError ? escapeHtml(authError) : ""}</span>
               </div>
               <button class="btn btn-muted btn-icon btn-icon-sm js-view-toggle" data-view="settings" aria-label="Settings" title="Settings">
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -1106,6 +1099,7 @@ export const renderPage = (
           <a id="carousel-link" href="#" target="_blank" rel="noreferrer">
             <img id="carousel-image" alt="" />
           </a>
+          <div class="carousel-indicator" id="carousel-indicator"></div>
           <button class="next" aria-label="Next">›</button>
         </div>
       </body>

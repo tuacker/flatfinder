@@ -12,7 +12,7 @@ export const planungsprojektePlzRange = {
   max: 1090,
 };
 
-export const excludedKeywords = ["SPF", "SMART", "Superförderung"];
+export const excludedKeywords = ["SPF", "SMART", "Superförderung", "Superfoerderung"];
 
 export const rateLimitMonthly = 6000;
 
@@ -20,9 +20,7 @@ export const planungsprojekteRequestCost = 1;
 export const wohnungssuchePreviewCost = 1;
 export const wohnungssucheResultCost = 1;
 
-export const planungsprojekteIntervalMinutes = 60;
-export const wohnungssucheIntervalMinutes = 20;
-
 export const loginHeadless = false;
 export const browserSlowMoMs = 0;
 export const loginTimeoutMs = 5 * 60 * 1000;
+export const wohnberatungRequestTimeoutMs = 15_000;

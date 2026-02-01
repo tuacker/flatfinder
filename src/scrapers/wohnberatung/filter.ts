@@ -26,7 +26,7 @@ export const hasExcludedKeyword = (text: string | null) => {
 export const filterPlanungsprojekte = (items: Planungsprojekt[]) => {
   return items.filter((item) => {
     if (!isAllowedPostalCode(item.postalCode)) return false;
-    const title = [item.address, item.postalCode].filter(Boolean).join(" ");
+    const title = [item.address, item.postalCode, item.foerderungstyp].filter(Boolean).join(" ");
     return !hasExcludedKeyword(title);
   });
 };

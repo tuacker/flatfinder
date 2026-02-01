@@ -1,4 +1,4 @@
-import { getConfig, getMeta, getDb, loadItems, saveItems, setConfig, setMeta } from "../../db.js";
+import { getConfig, getMeta, getDb, loadItems, setConfig, setMeta } from "../../db.js";
 import type { Planungsprojekt } from "./parse-planungsprojekte.js";
 import type { WohnungDetail } from "./parse-wohnung-detail.js";
 import type { WohnungListItem } from "./parse-wohnungen-list.js";
@@ -112,7 +112,6 @@ export type TelegramConfig = {
   enabled: boolean;
   botToken: string | null;
   chatId: string | null;
-  includeImages: boolean;
   enableActions: boolean;
   webhookToken: string | null;
   pollingEnabled: boolean;
@@ -133,13 +132,23 @@ export type FlatfinderState = {
   lastWohnungenFetchAt?: string | null;
   lastPlanungsprojekteFetchAt?: string | null;
   lastWillhabenFetchAt?: string | null;
+  nextWohnungenRetryAt?: string | null;
+  nextPlanungsprojekteRetryAt?: string | null;
+  wohnberatungAuthError?: string | null;
+  wohnberatungAuthNotifiedAt?: string | null;
   planungsprojekte: PlanungsprojektRecord[];
   wohnungen: WohnungRecord[];
   willhaben: WillhabenRecord[];
   rateLimit: RateLimitState;
 };
 
-const currentMonth = () => new Date().toISOString().slice(0, 7);
+const formatMonth = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  return `${year}-${month}`;
+};
+
+const currentMonth = () => formatMonth(new Date());
 
 const telegramConfigKey = "telegram.config";
 const willhabenConfigKey = "willhaben.config";
@@ -149,6 +158,10 @@ const metaKeys = {
   lastWohnungenFetchAt: "state.lastWohnungenFetchAt",
   lastPlanungsprojekteFetchAt: "state.lastPlanungsprojekteFetchAt",
   lastWillhabenFetchAt: "state.lastWillhabenFetchAt",
+  nextWohnungenRetryAt: "state.nextWohnungenRetryAt",
+  nextPlanungsprojekteRetryAt: "state.nextPlanungsprojekteRetryAt",
+  wohnberatungAuthError: "state.wohnberatungAuthError",
+  wohnberatungAuthNotifiedAt: "state.wohnberatungAuthNotifiedAt",
   rateLimit: "state.rateLimit",
 } as const;
 
@@ -156,7 +169,6 @@ export const defaultTelegramConfig = (): TelegramConfig => ({
   enabled: false,
   botToken: null,
   chatId: null,
-  includeImages: true,
   enableActions: false,
   webhookToken: null,
   pollingEnabled: false,
@@ -169,7 +181,6 @@ export const normalizeTelegramConfig = (
   enabled: Boolean(raw?.enabled),
   botToken: typeof raw?.botToken === "string" ? raw.botToken : null,
   chatId: typeof raw?.chatId === "string" ? raw.chatId : null,
-  includeImages: raw?.includeImages !== false,
   enableActions: Boolean(raw?.enableActions),
   webhookToken: typeof raw?.webhookToken === "string" ? raw.webhookToken : null,
   pollingEnabled: Boolean(raw?.pollingEnabled),
@@ -223,6 +234,10 @@ const defaultState = (): FlatfinderState => ({
   lastWohnungenFetchAt: null,
   lastPlanungsprojekteFetchAt: null,
   lastWillhabenFetchAt: null,
+  nextWohnungenRetryAt: null,
+  nextPlanungsprojekteRetryAt: null,
+  wohnberatungAuthError: null,
+  wohnberatungAuthNotifiedAt: null,
   planungsprojekte: [],
   wohnungen: [],
   willhaben: [],
@@ -238,6 +253,52 @@ const ensureDb = () => {
 
 export const loadState = async (): Promise<FlatfinderState> => {
   ensureDb();
+  const valueOrNull = (key: string) => {
+    const value = getMeta(key);
+    return value && value.length > 0 ? value : null;
+  };
+
+  return {
+    updatedAt: valueOrNull(metaKeys.updatedAt),
+    lastScrapeAt: valueOrNull(metaKeys.lastScrapeAt),
+    lastWohnungenFetchAt: valueOrNull(metaKeys.lastWohnungenFetchAt),
+    lastPlanungsprojekteFetchAt: valueOrNull(metaKeys.lastPlanungsprojekteFetchAt),
+    lastWillhabenFetchAt: valueOrNull(metaKeys.lastWillhabenFetchAt),
+    nextWohnungenRetryAt: valueOrNull(metaKeys.nextWohnungenRetryAt),
+    nextPlanungsprojekteRetryAt: valueOrNull(metaKeys.nextPlanungsprojekteRetryAt),
+    wohnberatungAuthError: valueOrNull(metaKeys.wohnberatungAuthError),
+    wohnberatungAuthNotifiedAt: valueOrNull(metaKeys.wohnberatungAuthNotifiedAt),
+    planungsprojekte: loadItems<PlanungsprojektRecord>("wohnberatung", "planungsprojekte"),
+    wohnungen: loadItems<WohnungRecord>("wohnberatung", "wohnungen"),
+    willhaben: loadItems<WillhabenRecord>("willhaben", "wohnungen"),
+    rateLimit: loadRateLimitSync(),
+  };
+};
+
+export const updateMeta = (values: Partial<FlatfinderState>) => {
+  ensureDb();
+  const write = (key: string, value: string | null | undefined) => {
+    if (value === undefined) return;
+    setMeta(key, value ?? "");
+  };
+
+  write(metaKeys.updatedAt, values.updatedAt ?? null);
+  write(metaKeys.lastScrapeAt, values.lastScrapeAt ?? null);
+  write(metaKeys.lastWohnungenFetchAt, values.lastWohnungenFetchAt ?? null);
+  write(metaKeys.lastPlanungsprojekteFetchAt, values.lastPlanungsprojekteFetchAt ?? null);
+  write(metaKeys.lastWillhabenFetchAt, values.lastWillhabenFetchAt ?? null);
+  write(metaKeys.nextWohnungenRetryAt, values.nextWohnungenRetryAt ?? null);
+  write(metaKeys.nextPlanungsprojekteRetryAt, values.nextPlanungsprojekteRetryAt ?? null);
+  write(metaKeys.wohnberatungAuthError, values.wohnberatungAuthError ?? null);
+  write(metaKeys.wohnberatungAuthNotifiedAt, values.wohnberatungAuthNotifiedAt ?? null);
+
+  if (values.rateLimit) {
+    saveRateLimitSync(values.rateLimit);
+  }
+};
+
+const loadRateLimitSync = (): RateLimitState => {
+  ensureDb();
   const rateLimitRaw = getMeta(metaKeys.rateLimit);
   let rateLimit = defaultState().rateLimit;
   if (rateLimitRaw) {
@@ -250,38 +311,23 @@ export const loadState = async (): Promise<FlatfinderState> => {
       // ignore
     }
   }
-
-  const valueOrNull = (key: string) => {
-    const value = getMeta(key);
-    return value && value.length > 0 ? value : null;
-  };
-
-  return {
-    updatedAt: valueOrNull(metaKeys.updatedAt),
-    lastScrapeAt: valueOrNull(metaKeys.lastScrapeAt),
-    lastWohnungenFetchAt: valueOrNull(metaKeys.lastWohnungenFetchAt),
-    lastPlanungsprojekteFetchAt: valueOrNull(metaKeys.lastPlanungsprojekteFetchAt),
-    lastWillhabenFetchAt: valueOrNull(metaKeys.lastWillhabenFetchAt),
-    planungsprojekte: loadItems<PlanungsprojektRecord>("wohnberatung", "planungsprojekte"),
-    wohnungen: loadItems<WohnungRecord>("wohnberatung", "wohnungen"),
-    willhaben: loadItems<WillhabenRecord>("willhaben", "wohnungen"),
-    rateLimit,
-  };
+  const current = currentMonth();
+  if (rateLimit.month < current) {
+    rateLimit = { month: current, count: 0 };
+    saveRateLimitSync(rateLimit);
+  }
+  return rateLimit;
 };
 
-export const saveState = async (state: FlatfinderState) => {
+const saveRateLimitSync = (rateLimit: RateLimitState) => {
   ensureDb();
-  const updatedAt = state.updatedAt ?? new Date().toISOString();
-  saveItems("wohnberatung", "wohnungen", state.wohnungen, updatedAt);
-  saveItems("wohnberatung", "planungsprojekte", state.planungsprojekte, updatedAt);
-  saveItems("willhaben", "wohnungen", state.willhaben, updatedAt);
+  setMeta(metaKeys.rateLimit, JSON.stringify(rateLimit));
+};
 
-  setMeta(metaKeys.updatedAt, state.updatedAt ?? "");
-  setMeta(metaKeys.lastScrapeAt, state.lastScrapeAt ?? "");
-  setMeta(metaKeys.lastWohnungenFetchAt, state.lastWohnungenFetchAt ?? "");
-  setMeta(metaKeys.lastPlanungsprojekteFetchAt, state.lastPlanungsprojekteFetchAt ?? "");
-  setMeta(metaKeys.lastWillhabenFetchAt, state.lastWillhabenFetchAt ?? "");
-  setMeta(metaKeys.rateLimit, JSON.stringify(state.rateLimit ?? defaultState().rateLimit));
+export const loadRateLimit = () => loadRateLimitSync();
+
+export const saveRateLimit = (rateLimit: RateLimitState) => {
+  saveRateLimitSync(rateLimit);
 };
 
 export const loadTelegramConfig = async (): Promise<TelegramConfig> => {

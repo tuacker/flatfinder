@@ -17,3 +17,12 @@ export const formatRefreshLeft = (iso: string | null) => {
   if (diffMs < 60000) return `${Math.ceil(diffMs / 1000)}s`;
   return formatTimeLeft(iso);
 };
+
+export const formatRefreshLabelMs = (nextAtMs: number, nowMs = Date.now()) => {
+  if (!Number.isFinite(nextAtMs)) return "soon";
+  const diffMs = nextAtMs - nowMs;
+  if (Number.isNaN(diffMs)) return "soon";
+  if (diffMs <= 0) return "now";
+  if (diffMs < 60_000) return `${Math.ceil(diffMs / 1000)}s`;
+  return `${Math.ceil(diffMs / 60_000)}m`;
+};

@@ -24,5 +24,6 @@ export const willhabenRecentPeriod = "2";
 export const willhabenRefreshIntervalMs = 60_000;
 export const willhabenDetailRefreshIntervalMs = 60 * 60 * 1000;
 export const willhabenDetailRefreshIgnoredIntervalMs = 12 * 60 * 60 * 1000;
+export const willhabenRequestTimeoutMs = 15_000;
 
 export const willhabenExcludedKeywords = ["wohnticket", "sozialwohnung", "wiener wohnen"];

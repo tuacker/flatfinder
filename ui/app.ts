@@ -1,4 +1,4 @@
-import { formatRefreshLeft, formatTimeLeft } from "./time.js";
+import { formatRefreshLabelMs, formatRefreshLeft, formatTimeLeft } from "./time.js";
 
 const updateCountdowns = () => {
   document.querySelectorAll<HTMLElement>(".time[data-end]").forEach((node) => {
@@ -30,23 +30,21 @@ const highlightNew = () => {
 const updateNextRefreshLabel = () => {
   const willhabenLabel = document.getElementById("next-refresh-willhaben");
   const wohnberatungLabel = document.getElementById("next-refresh-wohnberatung");
+  const intervalLabel = document.getElementById("ww-intervals");
   const willhabenAt = Number(document.body.getAttribute("data-next-refresh-willhaben"));
   const wohnberatungAt = Number(document.body.getAttribute("data-next-refresh-wohnberatung"));
+  const wohnungenInterval = Number(document.body.getAttribute("data-ww-interval-wohnungen"));
+  const planungenInterval = Number(document.body.getAttribute("data-ww-interval-planungsprojekte"));
   if (willhabenLabel && Number.isFinite(willhabenAt)) {
-    willhabenLabel.textContent = formatRefreshLeft(new Date(willhabenAt).toISOString()) ?? "soon";
+    willhabenLabel.textContent = formatRefreshLabelMs(willhabenAt);
   }
   if (wohnberatungLabel && Number.isFinite(wohnberatungAt)) {
-    const diffMs = wohnberatungAt - Date.now();
-    if (Number.isNaN(diffMs)) {
-      wohnberatungLabel.textContent = "soon";
-      return;
-    }
-    if (diffMs <= 0) {
-      wohnberatungLabel.textContent = "now";
-      return;
-    }
-    const minutes = Math.max(1, Math.ceil(diffMs / 60000));
-    wohnberatungLabel.textContent = `${minutes}m`;
+    wohnberatungLabel.textContent = formatRefreshLabelMs(wohnberatungAt);
+  }
+  if (intervalLabel && Number.isFinite(wohnungenInterval) && Number.isFinite(planungenInterval)) {
+    const wohnungenMinutes = Math.max(1, Math.round(wohnungenInterval / 60000));
+    const planungenMinutes = Math.max(1, Math.round(planungenInterval / 60000));
+    intervalLabel.textContent = `${wohnungenMinutes}m/${planungenMinutes}m`;
   }
 };
 
@@ -926,9 +924,6 @@ const initTelegramSettings = () => {
   const enabled = document.getElementById("telegram-enabled") as HTMLInputElement | null;
   const botToken = document.getElementById("telegram-bot-token") as HTMLInputElement | null;
   const chatId = document.getElementById("telegram-chat-id") as HTMLInputElement | null;
-  const includeImages = document.getElementById(
-    "telegram-include-images",
-  ) as HTMLInputElement | null;
   const enableActions = document.getElementById(
     "telegram-enable-actions",
   ) as HTMLInputElement | null;
@@ -957,7 +952,7 @@ const initTelegramSettings = () => {
     settingsDirty = true;
   };
 
-  [enabled, botToken, chatId, includeImages, enableActions, pollingEnabled, webhookToken]
+  [enabled, botToken, chatId, enableActions, pollingEnabled, webhookToken]
     .filter((input): input is HTMLInputElement => Boolean(input))
     .forEach((input) => {
       bindOnceEvent(input, "boundTelegramDirtyInput", "input", markDirty);
@@ -996,7 +991,6 @@ const initTelegramSettings = () => {
           enabled: Boolean(enabled?.checked),
           botToken: botToken?.value.trim(),
           chatId: chatId?.value.trim(),
-          includeImages: Boolean(includeImages?.checked),
           enableActions: Boolean(enableActions?.checked),
           pollingEnabled: Boolean(pollingEnabled?.checked),
           webhookToken: webhookToken?.value.trim(),
@@ -1012,6 +1006,34 @@ const initTelegramSettings = () => {
       if (status) status.textContent = "Save failed.";
     } finally {
       saveButton.disabled = false;
+    }
+  });
+};
+
+const initWohnberatungSettings = () => {
+  const loginButton = document.getElementById("wohnberatung-login") as HTMLButtonElement | null;
+  if (!loginButton) return;
+  const status = document.getElementById("wohnberatung-login-status");
+
+  bindOnce(loginButton, "boundWohnberatungLogin", async (event) => {
+    event.preventDefault();
+    loginButton.disabled = true;
+    if (status) status.textContent = "Starting login…";
+    try {
+      const response = await fetch("/api/wohnberatung/login", { method: "POST" });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+        if (status) status.textContent = payload?.message ?? "Login failed.";
+        return;
+      }
+      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+      if (status) {
+        status.textContent = payload?.message ?? "Login started. Complete it in the browser.";
+      }
+    } catch {
+      if (status) status.textContent = "Login failed.";
+    } finally {
+      loginButton.disabled = false;
     }
   });
 };
@@ -1116,6 +1138,7 @@ const initInteractiveElements = () => {
   initMapToggles();
   initViewToggles();
   initSourceFilters();
+  initWohnberatungSettings();
   initTelegramSettings();
   initWillhabenSettings();
   initInterestActions();
@@ -1140,6 +1163,48 @@ const initEntryActions = () => {
       if (!row) return;
 
       suppressReloadUntil = Date.now() + 4000;
+
+      const applyEntryState = (seenAt: string | null, hiddenAt: string | null) => {
+        row.setAttribute("data-seen-at", seenAt ?? "");
+        row.setAttribute("data-hidden-at", hiddenAt ?? "");
+        row.classList.toggle("is-seen", Boolean(seenAt));
+        row.classList.toggle("is-new", !seenAt);
+
+        row.querySelectorAll<HTMLButtonElement>(".seen-toggle").forEach((btn) => {
+          btn.classList.toggle("is-hidden", Boolean(seenAt));
+        });
+        row
+          .querySelectorAll<HTMLButtonElement>(".js-entry-action[data-action='toggleHidden']")
+          .forEach((btn) => {
+            btn.innerHTML = renderVisibilityLabel(Boolean(hiddenAt));
+            btn.setAttribute("aria-label", hiddenAt ? "Unhide" : "Hide");
+          });
+
+        const hiddenList = document.getElementById("hidden-list");
+        const targetList = getRowList(type);
+
+        if (hiddenAt && hiddenList) {
+          insertHiddenRow(row, hiddenList);
+        } else if (!hiddenAt && targetList) {
+          placeSeenOrder(row, targetList);
+        }
+
+        updateHiddenCount();
+        highlightNew();
+      };
+
+      const previousSeenAt = row.getAttribute("data-seen-at") || null;
+      const previousHiddenAt = row.getAttribute("data-hidden-at") || null;
+      const nowIso = new Date().toISOString();
+      if (action === "toggleSeen") {
+        const nextSeenAt = previousSeenAt ? null : nowIso;
+        applyEntryState(nextSeenAt, previousHiddenAt);
+      }
+      if (action === "toggleHidden") {
+        const nextHiddenAt = previousHiddenAt ? null : nowIso;
+        const nextSeenAt = nextHiddenAt && !previousSeenAt ? nowIso : previousSeenAt;
+        applyEntryState(nextSeenAt, nextHiddenAt);
+      }
 
       button.disabled = true;
       try {
@@ -1167,33 +1232,7 @@ const initEntryActions = () => {
 
         const seenAt = payload.item?.seenAt ?? null;
         const hiddenAt = payload.item?.hiddenAt ?? null;
-
-        row.setAttribute("data-seen-at", seenAt ?? "");
-        row.setAttribute("data-hidden-at", hiddenAt ?? "");
-        row.classList.toggle("is-seen", Boolean(seenAt));
-        row.classList.toggle("is-new", !seenAt);
-
-        row.querySelectorAll<HTMLButtonElement>(".seen-toggle").forEach((btn) => {
-          btn.classList.toggle("is-hidden", Boolean(seenAt));
-        });
-        row
-          .querySelectorAll<HTMLButtonElement>(".js-entry-action[data-action='toggleHidden']")
-          .forEach((btn) => {
-            btn.innerHTML = renderVisibilityLabel(Boolean(hiddenAt));
-            btn.setAttribute("aria-label", hiddenAt ? "Unhide" : "Hide");
-          });
-
-        const hiddenList = document.getElementById("hidden-list");
-        const targetList = getRowList(type);
-
-        if (hiddenAt && hiddenList) {
-          insertHiddenRow(row, hiddenList);
-        } else if (!hiddenAt && targetList) {
-          placeSeenOrder(row, targetList);
-        }
-
-        updateHiddenCount();
-        highlightNew();
+        applyEntryState(seenAt, hiddenAt);
       } finally {
         button.disabled = false;
       }
@@ -1207,12 +1246,14 @@ let carouselIndex = 0;
 let carousel: HTMLElement | null = null;
 let carouselImage: HTMLImageElement | null = null;
 let carouselLink: HTMLAnchorElement | null = null;
+let carouselIndicator: HTMLElement | null = null;
 
 const ensureCarouselElements = () => {
   if (carousel) return;
   carousel = document.getElementById("carousel");
   carouselImage = document.getElementById("carousel-image") as HTMLImageElement | null;
   carouselLink = document.getElementById("carousel-link") as HTMLAnchorElement | null;
+  carouselIndicator = document.getElementById("carousel-indicator");
 };
 
 const showCarouselImage = () => {
@@ -1221,6 +1262,9 @@ const showCarouselImage = () => {
   const src = carouselImages[carouselIndex];
   carouselImage.src = src;
   if (carouselLink) carouselLink.href = src;
+  if (carouselIndicator) {
+    carouselIndicator.textContent = `${carouselIndex + 1} / ${carouselImages.length}`;
+  }
 };
 
 const openCarousel = (images: string[]) => {
@@ -1237,6 +1281,9 @@ const closeCarousel = () => {
   if (!carousel) return;
   carousel.classList.add("hidden");
   carouselImages = [];
+  if (carouselIndicator) {
+    carouselIndicator.textContent = "";
+  }
 };
 
 const bindCarouselButtons = () => {
@@ -1295,6 +1342,9 @@ type FragmentPayload = {
   updatedAt: string | null;
   wohnberatungNextRefreshAt: number;
   willhabenNextRefreshAt: number;
+  wohnberatungWohnungenIntervalMs: number;
+  wohnberatungPlanungsprojekteIntervalMs: number;
+  wohnberatungAuthError: string | null;
   rateLimitCount: number;
   rateLimitMonthly: number;
   sections: {
@@ -1327,14 +1377,14 @@ const normalizeMapState = (element: Element) => {
 
 const replaceSection = (id: string, html: string, openMapNodes: Map<string, HTMLElement>) => {
   const current = document.getElementById(id);
-  if (!current) return;
+  if (!current) return false;
   const wrapper = document.createElement("div");
   wrapper.innerHTML = html.trim();
   const next = wrapper.firstElementChild;
-  if (!next) return;
+  if (!next) return false;
   const normalizedCurrent = normalizeMapState(current);
   const normalizedNext = normalizeMapState(next);
-  if (normalizedCurrent.outerHTML === normalizedNext.outerHTML) return;
+  if (normalizedCurrent.outerHTML === normalizedNext.outerHTML) return false;
   if (openMapNodes.size) {
     openMapNodes.forEach((node, mapId) => {
       const replacement = next.querySelector<HTMLElement>(`#${mapId}`);
@@ -1344,6 +1394,7 @@ const replaceSection = (id: string, html: string, openMapNodes: Map<string, HTML
     });
   }
   current.replaceWith(next);
+  return true;
 };
 
 const applyFragments = (payload: FragmentPayload) => {
@@ -1363,38 +1414,57 @@ const applyFragments = (payload: FragmentPayload) => {
     String(payload.wohnberatungNextRefreshAt),
   );
   document.body.setAttribute("data-next-refresh-willhaben", String(payload.willhabenNextRefreshAt));
+  document.body.setAttribute(
+    "data-ww-interval-wohnungen",
+    String(payload.wohnberatungWohnungenIntervalMs),
+  );
+  document.body.setAttribute(
+    "data-ww-interval-planungsprojekte",
+    String(payload.wohnberatungPlanungsprojekteIntervalMs),
+  );
 
   const rateCount = document.getElementById("rate-count");
   if (rateCount) rateCount.textContent = String(payload.rateLimitCount);
   const rateLimit = document.getElementById("rate-limit");
   if (rateLimit) rateLimit.textContent = String(payload.rateLimitMonthly);
+  const authStatus = document.getElementById("ww-auth-status");
+  if (authStatus) authStatus.textContent = payload.wohnberatungAuthError ?? "";
 
+  let replaced = false;
   if (!openMapSections.has("hidden-section")) {
-    replaceSection("hidden-section", payload.sections.hidden, openMapNodes);
+    replaced = replaceSection("hidden-section", payload.sections.hidden, openMapNodes) || replaced;
   }
   if (!openMapSections.has("interested-section")) {
-    replaceSection("interested-section", payload.sections.interested, openMapNodes);
+    replaced =
+      replaceSection("interested-section", payload.sections.interested, openMapNodes) || replaced;
   }
   if (!openMapSections.has("wohnungen-section")) {
-    replaceSection("wohnungen-section", payload.sections.wohnungen, openMapNodes);
+    replaced =
+      replaceSection("wohnungen-section", payload.sections.wohnungen, openMapNodes) || replaced;
   }
   if (!openMapSections.has("planungsprojekte-section")) {
-    replaceSection("planungsprojekte-section", payload.sections.planungsprojekte, openMapNodes);
+    replaced =
+      replaceSection("planungsprojekte-section", payload.sections.planungsprojekte, openMapNodes) ||
+      replaced;
   }
   if (!openMapSections.has("willhaben-section")) {
-    replaceSection("willhaben-section", payload.sections.willhaben, openMapNodes);
+    replaced =
+      replaceSection("willhaben-section", payload.sections.willhaben, openMapNodes) || replaced;
   }
   if (document.body.getAttribute("data-view") !== "settings" && !settingsDirty) {
-    replaceSection("settings-section", payload.sections.settings, openMapNodes);
+    replaced =
+      replaceSection("settings-section", payload.sections.settings, openMapNodes) || replaced;
   }
 
-  initInteractiveElements();
-  syncPendingRemoveConfirms();
-  updateHiddenCount();
-  initWillhabenFilters();
+  if (replaced) {
+    initInteractiveElements();
+    syncPendingRemoveConfirms();
+    updateHiddenCount();
+    initWillhabenFilters();
+    updateSwapIndicators();
+    syncReorderActive();
+  }
   refreshDerivedUi();
-  updateSwapIndicators();
-  syncReorderActive();
 };
 
 const refreshFromServer = async () => {

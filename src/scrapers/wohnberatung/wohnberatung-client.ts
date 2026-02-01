@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
-import { baseUrl, storageStatePath } from "./config.js";
+import { fetchWithTimeout } from "../../shared/http.js";
+import { baseUrl, storageStatePath, wohnberatungRequestTimeoutMs } from "./config.js";
 
 type StorageStateCookie = {
   name: string;
@@ -9,14 +10,22 @@ type StorageStateCookie = {
 };
 
 export const loadAuthCookies = async (): Promise<string> => {
-  const raw = await fs.readFile(storageStatePath, "utf8");
-  const parsed = JSON.parse(raw) as { cookies?: StorageStateCookie[] } | null;
-  const cookies = Array.isArray(parsed?.cookies) ? parsed.cookies : [];
-  const serialized = cookies
-    .filter((cookie) => cookie.domain?.includes("wohnberatung-wien.at"))
-    .map((cookie) => `${cookie.name}=${cookie.value}`)
-    .join("; ");
-  return serialized;
+  try {
+    const raw = await fs.readFile(storageStatePath, "utf8");
+    const parsed = JSON.parse(raw) as { cookies?: StorageStateCookie[] } | null;
+    const cookies = Array.isArray(parsed?.cookies) ? parsed.cookies : [];
+    const serialized = cookies
+      .filter((cookie) => cookie.domain?.includes("wohnberatung-wien.at"))
+      .map((cookie) => `${cookie.name}=${cookie.value}`)
+      .join("; ");
+    return serialized;
+  } catch (error) {
+    console.warn(
+      "[wohnberatung] Failed to load auth cookies:",
+      error instanceof Error ? error.message : String(error),
+    );
+    return "";
+  }
 };
 
 export const buildWohnberatungUrl = (page: "wohnung" | "projekt", id: string, flag?: string) => {
@@ -30,13 +39,16 @@ export const buildWohnberatungUrl = (page: "wohnung" | "projekt", id: string, fl
 };
 
 export const fetchWohnberatungHtml = async (url: string, cookieHeader: string) => {
-  const response = await fetch(url, {
+  const response = await fetchWithTimeout(url, {
     method: "GET",
     headers: {
       cookie: cookieHeader,
       "user-agent": "flatfinder",
     },
+    timeoutMs: wohnberatungRequestTimeoutMs,
   });
   const html = await response.text();
   return { response, html };
 };
+
+export const isLoginPage = (html: string) => /<form[^>]+id=["']loginform["']/i.test(html);

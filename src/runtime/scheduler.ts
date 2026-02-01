@@ -1,18 +1,23 @@
-export type JobRunner = (name: string, job: () => Promise<void>) => Promise<void> | void;
+import { scheduleNextRefresh } from "../shared/refresh.js";
+
+export type JobRunner = <T>(name: string, job: () => Promise<T>) => Promise<T | undefined>;
 
 export const createSerialQueue = (): JobRunner => {
   let queue = Promise.resolve();
-  return (name, job) => {
+  return async <T>(name: string, job: () => Promise<T>) => {
+    let result: T | undefined;
     queue = queue
       .catch(() => undefined)
       .then(async () => {
         try {
-          await job();
+          result = await job();
         } catch (error) {
           console.error(`[${name}]`, error instanceof Error ? error.message : error);
+          result = undefined;
         }
       });
-    return queue;
+    await queue;
+    return result;
   };
 };
 
@@ -29,7 +34,7 @@ export const scheduleJob = (options: {
   const execute = () => {
     if (pending) return;
     pending = true;
-    const nextAt = Date.now() + options.intervalMs;
+    const nextAt = scheduleNextRefresh(Date.now(), options.intervalMs);
     options.onSchedule(nextAt);
     const job = async () => {
       try {

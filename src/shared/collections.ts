@@ -14,3 +14,8 @@ export const getCollection = (state: FlatfinderState, type: ItemType) =>
 
 export const getPageForType = (type: WohnberatungType) =>
   type === "wohnungen" ? "wohnung" : "projekt";
+
+export const getDbLocation = (type: ItemType) =>
+  type === "willhaben"
+    ? { source: "willhaben" as const, type: "wohnungen" as const }
+    : { source: "wohnberatung" as const, type: type };

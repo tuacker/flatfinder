@@ -33,7 +33,9 @@ export const parseWohnungDetail = (html: string): WohnungDetail => {
 
   const superfoerderungRow = $("tr").filter((_, el) => {
     const text = normalize($(el).find("th").text());
-    return text?.toLowerCase().startsWith("superförderung");
+    if (!text) return false;
+    const lower = text.toLowerCase();
+    return lower.startsWith("superförderung") || lower.startsWith("superfoerderung");
   });
   const superfoerderung = normalize(superfoerderungRow.first().find("td").text());
 
