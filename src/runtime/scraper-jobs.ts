@@ -10,12 +10,18 @@ import {
 } from "../scrapers/willhaben/willhaben-service.js";
 import { willhabenRefreshIntervalMs } from "../scrapers/willhaben/config.js";
 import {
+  refreshDerstandardDetails,
+  scrapeDerstandard,
+} from "../scrapers/derstandard/derstandard-service.js";
+import { derstandardRefreshIntervalMs } from "../scrapers/derstandard/config.js";
+import {
+  loadDerstandardConfig,
   loadState,
   loadTelegramConfig,
   loadWillhabenConfig,
   updateMeta,
   type FlatfinderState,
-} from "../scrapers/wohnberatung/state.js";
+} from "../state/flatfinder-state.js";
 import { notifyTelegramNewItems } from "../telegram.js";
 import { rateLimitMonthly } from "../scrapers/wohnberatung/config.js";
 import { saveScrapedItems, updateItemsColumns } from "../db.js";
@@ -23,7 +29,7 @@ import { scheduleJob } from "./scheduler.js";
 
 const fortyEightHoursMs = 48 * 60 * 60 * 1000;
 
-type ScrapeKey = "wohnungen" | "planungsprojekte" | "willhaben";
+type ScrapeKey = "wohnungen" | "planungsprojekte" | "willhaben" | "derstandard";
 
 type ScraperJobsOptions = {
   nowIso: () => string;
@@ -40,7 +46,11 @@ const saveCollection = (key: ScrapeKey, state: FlatfinderState, now: string) => 
     saveScrapedItems("wohnberatung", "planungsprojekte", state.planungsprojekte, now);
     return;
   }
-  saveScrapedItems("willhaben", "wohnungen", state.willhaben, now);
+  if (key === "willhaben") {
+    saveScrapedItems("willhaben", "wohnungen", state.willhaben, now);
+    return;
+  }
+  saveScrapedItems("derstandard", "wohnungen", state.derstandard, now);
 };
 
 const updateScrapeMeta = (options: {
@@ -60,6 +70,7 @@ const updateScrapeMeta = (options: {
     if (key === "wohnungen") patch.lastWohnungenFetchAt = now;
     if (key === "planungsprojekte") patch.lastPlanungsprojekteFetchAt = now;
     if (key === "willhaben") patch.lastWillhabenFetchAt = now;
+    if (key === "derstandard") patch.lastDerstandardFetchAt = now;
   }
 
   if (key === "wohnungen") {
@@ -77,7 +88,7 @@ const updateScrapeMeta = (options: {
 };
 
 const markTelegramNotified = (
-  source: "wohnberatung" | "willhaben",
+  source: "wohnberatung" | "willhaben" | "derstandard",
   type: "wohnungen" | "planungsprojekte",
   ids: string[],
   now: string,
@@ -94,12 +105,14 @@ const notifyNewItems = async (key: ScrapeKey, state: FlatfinderState, now: strin
       wohnungen: key === "wohnungen" ? state.wohnungen : [],
       planungsprojekte: key === "planungsprojekte" ? state.planungsprojekte : [],
       willhaben: key === "willhaben" ? state.willhaben : [],
+      derstandard: key === "derstandard" ? state.derstandard : [],
       now,
     });
     if (notified) {
       markTelegramNotified("wohnberatung", "wohnungen", notified.wohnungen, now);
       markTelegramNotified("wohnberatung", "planungsprojekte", notified.planungsprojekte, now);
       markTelegramNotified("willhaben", "wohnungen", notified.willhaben, now);
+      markTelegramNotified("derstandard", "wohnungen", notified.derstandard, now);
     }
   } catch (error) {
     console.warn(
@@ -225,6 +238,37 @@ export const registerScraperJobs = (options: ScraperJobsOptions) => {
 
       updateScrapeMeta({
         key: "willhaben",
+        updatedAt: state.updatedAt ?? null,
+        now: options.nowIso(),
+        state,
+        recordFetch: searchResult.ok,
+      });
+      options.onUpdate();
+    },
+  });
+
+  scheduleJob({
+    name: "derstandard",
+    intervalMs: derstandardRefreshIntervalMs,
+    lastRunAt: undefined,
+    onSchedule: (nextAt) => options.onSchedule("derstandard", nextAt),
+    run: async () => {
+      const state = await loadState();
+      const config = await loadDerstandardConfig();
+      const searchResult = await scrapeDerstandard(state, config);
+      const detailResult = await refreshDerstandardDetails(state);
+      const shouldSave = searchResult.updated || detailResult.updated;
+
+      if (shouldSave) {
+        saveCollection("derstandard", state, state.updatedAt ?? options.nowIso());
+      }
+
+      if (searchResult.ok) {
+        await notifyNewItems("derstandard", state, options.nowIso());
+      }
+
+      updateScrapeMeta({
+        key: "derstandard",
         updatedAt: state.updatedAt ?? null,
         now: options.nowIso(),
         state,

@@ -7,12 +7,15 @@ import {
   type WillhabenSortKey,
 } from "../../ui/render.js";
 import {
+  loadDerstandardConfig,
   loadTelegramConfig,
   loadWillhabenConfig,
+  normalizeDerstandardConfig,
   normalizeWillhabenConfig,
+  saveDerstandardConfig,
   saveWillhabenConfig,
   type FlatfinderState,
-} from "../scrapers/wohnberatung/state.js";
+} from "../state/flatfinder-state.js";
 import { loginAndSaveState } from "../scrapers/wohnberatung/session.js";
 import { getDbLocation } from "../shared/collections.js";
 import { updateItemColumns, loadItem } from "../db.js";
@@ -28,7 +31,7 @@ type Services = {
   nowIso: () => string;
 };
 
-type SourceFilter = "all" | "wohnberatung" | "willhaben";
+type SourceFilter = "all" | "wohnberatung" | "willhaben" | "derstandard";
 
 const parseListParam = (value: unknown): string[] => {
   if (!value) return [];
@@ -60,7 +63,9 @@ const parseWillhabenFilters = (query: Record<string, unknown>): WillhabenFilters
 };
 
 const getSourceFilter = (value: unknown): SourceFilter => {
-  if (value === "wohnberatung" || value === "willhaben") return value;
+  if (value === "wohnberatung" || value === "willhaben" || value === "derstandard") {
+    return value;
+  }
   return "all";
 };
 
@@ -68,6 +73,7 @@ const buildRenderOptions = (
   state: FlatfinderState,
   query: Record<string, unknown>,
   willhabenConfig: Awaited<ReturnType<typeof loadWillhabenConfig>>,
+  derstandardConfig: Awaited<ReturnType<typeof loadDerstandardConfig>>,
   stateService: StateService,
 ) => {
   const intervals = getWohnberatungIntervalsMs(state);
@@ -76,10 +82,12 @@ const buildRenderOptions = (
     willhabenFilters: parseWillhabenFilters(query),
     wohnberatungNextRefreshAt: stateService.nextRefreshWohnberatung(state),
     willhabenNextRefreshAt: stateService.nextRefreshWillhaben(state),
+    derstandardNextRefreshAt: stateService.nextRefreshDerstandard(state),
     wohnberatungWohnungenIntervalMs: intervals.wohnungenIntervalMs,
     wohnberatungPlanungsprojekteIntervalMs: intervals.planungsprojekteIntervalMs,
     wohnberatungAuthError: state.wohnberatungAuthError ?? null,
     willhabenConfig,
+    derstandardConfig,
   };
 };
 
@@ -87,6 +95,7 @@ const buildFragmentOptions = (
   state: FlatfinderState,
   query: Record<string, unknown>,
   willhabenConfig: Awaited<ReturnType<typeof loadWillhabenConfig>>,
+  derstandardConfig: Awaited<ReturnType<typeof loadDerstandardConfig>>,
   stateService: StateService,
 ) => {
   const intervals = getWohnberatungIntervalsMs(state);
@@ -94,10 +103,12 @@ const buildFragmentOptions = (
     willhabenFilters: parseWillhabenFilters(query),
     wohnberatungNextRefreshAt: stateService.nextRefreshWohnberatung(state),
     willhabenNextRefreshAt: stateService.nextRefreshWillhaben(state),
+    derstandardNextRefreshAt: stateService.nextRefreshDerstandard(state),
     wohnberatungWohnungenIntervalMs: intervals.wohnungenIntervalMs,
     wohnberatungPlanungsprojekteIntervalMs: intervals.planungsprojekteIntervalMs,
     wohnberatungAuthError: state.wohnberatungAuthError ?? null,
     willhabenConfig,
+    derstandardConfig,
   };
 };
 
@@ -161,6 +172,14 @@ export const registerRoutes = (app: Express, services: Services) => {
     res.json({ ok: true, config: normalized });
   });
 
+  app.post("/api/derstandard/config", async (req, res) => {
+    const normalized = normalizeDerstandardConfig(
+      (req.body ?? null) as Record<string, unknown> | null,
+    );
+    await saveDerstandardConfig(normalized);
+    res.json({ ok: true, config: normalized });
+  });
+
   app.post("/api/items/:type/:id", async (req, res) => {
     try {
       const { type, id } = req.params;
@@ -169,7 +188,12 @@ export const registerRoutes = (app: Express, services: Services) => {
         res.status(400).json({ error: "Missing item id." });
         return;
       }
-      if (type !== "wohnungen" && type !== "planungsprojekte" && type !== "willhaben") {
+      if (
+        type !== "wohnungen" &&
+        type !== "planungsprojekte" &&
+        type !== "willhaben" &&
+        type !== "derstandard"
+      ) {
         res.status(400).json({ error: "Unknown item type." });
         return;
       }
@@ -247,10 +271,12 @@ export const registerRoutes = (app: Express, services: Services) => {
     const currentState = await services.stateService.loadState();
     const telegramConfig = await loadTelegramConfig();
     const willhabenConfig = await loadWillhabenConfig();
+    const derstandardConfig = await loadDerstandardConfig();
     const options = buildFragmentOptions(
       currentState,
       req.query,
       willhabenConfig,
+      derstandardConfig,
       services.stateService,
     );
     res.json(renderFragments(currentState, options, telegramConfig));
@@ -264,8 +290,15 @@ export const registerRoutes = (app: Express, services: Services) => {
   const loadPageState = async (query: Record<string, unknown>) => {
     const currentState = await services.stateService.loadState();
     const willhabenConfig = await loadWillhabenConfig();
+    const derstandardConfig = await loadDerstandardConfig();
     const telegramConfig = await loadTelegramConfig();
-    const options = buildRenderOptions(currentState, query, willhabenConfig, services.stateService);
+    const options = buildRenderOptions(
+      currentState,
+      query,
+      willhabenConfig,
+      derstandardConfig,
+      services.stateService,
+    );
     return { currentState, telegramConfig, options };
   };
 

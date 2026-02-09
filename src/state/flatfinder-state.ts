@@ -1,12 +1,17 @@
-import { getConfig, getMeta, getDb, loadItems, setConfig, setMeta } from "../../db.js";
-import type { Planungsprojekt } from "./parse-planungsprojekte.js";
-import type { WohnungDetail } from "./parse-wohnung-detail.js";
-import type { WohnungListItem } from "./parse-wohnungen-list.js";
+import { getConfig, getMeta, getDb, loadItems, setConfig, setMeta } from "../db.js";
+import type { Planungsprojekt } from "../scrapers/wohnberatung/parse-planungsprojekte.js";
+import type { WohnungDetail } from "../scrapers/wohnberatung/parse-wohnung-detail.js";
+import type { WohnungListItem } from "../scrapers/wohnberatung/parse-wohnungen-list.js";
 import {
   willhabenDistrictCount,
   willhabenMaxTotalCost,
   willhabenMinArea,
-} from "../willhaben/config.js";
+} from "../scrapers/willhaben/config.js";
+import {
+  derstandardDistrictCount,
+  derstandardMaxTotalCost,
+  derstandardMinArea,
+} from "../scrapers/derstandard/config.js";
 
 export type PlanungsprojektDetail = {
   lageplanUrl: string | null;
@@ -103,6 +108,43 @@ export type WillhabenRecord = {
   telegramNotifiedAt?: string | null;
 };
 
+export type DerstandardDetail = {
+  description?: string | null;
+  descriptionHtml?: string | null;
+  images?: string[];
+  costs?: Record<string, string>;
+  primaryCost?: string | null;
+  primaryCostLabel?: string | null;
+  expired?: boolean | null;
+};
+
+export type DerstandardRecord = {
+  id: string;
+  title: string | null;
+  location: string | null;
+  address: string | null;
+  postalCode: string | null;
+  district: string | null;
+  url: string | null;
+  thumbnailUrl?: string | null;
+  images?: string[];
+  size?: string | null;
+  rooms?: string | null;
+  primaryCost?: string | null;
+  primaryCostLabel?: string | null;
+  costs?: Record<string, string>;
+  totalCostValue?: number | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  lastDetailCheckAt?: string | null;
+  expired?: boolean | null;
+  seenAt?: string | null;
+  hiddenAt?: string | null;
+  detail?: DerstandardDetail;
+  interest?: InterestInfo;
+  telegramNotifiedAt?: string | null;
+};
+
 export type RateLimitState = {
   month: string;
   count: number;
@@ -126,12 +168,21 @@ export type WillhabenSearchConfig = {
   districts: string[];
 };
 
+export type DerstandardSearchConfig = {
+  minArea: number | null;
+  maxArea: number | null;
+  minTotalCost: number | null;
+  maxTotalCost: number | null;
+  districts: string[];
+};
+
 export type FlatfinderState = {
   updatedAt: string | null;
   lastScrapeAt?: string | null;
   lastWohnungenFetchAt?: string | null;
   lastPlanungsprojekteFetchAt?: string | null;
   lastWillhabenFetchAt?: string | null;
+  lastDerstandardFetchAt?: string | null;
   nextWohnungenRetryAt?: string | null;
   nextPlanungsprojekteRetryAt?: string | null;
   wohnberatungAuthError?: string | null;
@@ -139,6 +190,7 @@ export type FlatfinderState = {
   planungsprojekte: PlanungsprojektRecord[];
   wohnungen: WohnungRecord[];
   willhaben: WillhabenRecord[];
+  derstandard: DerstandardRecord[];
   rateLimit: RateLimitState;
 };
 
@@ -152,12 +204,14 @@ const currentMonth = () => formatMonth(new Date());
 
 const telegramConfigKey = "telegram.config";
 const willhabenConfigKey = "willhaben.config";
+const derstandardConfigKey = "derstandard.config";
 const metaKeys = {
   updatedAt: "state.updatedAt",
   lastScrapeAt: "state.lastScrapeAt",
   lastWohnungenFetchAt: "state.lastWohnungenFetchAt",
   lastPlanungsprojekteFetchAt: "state.lastPlanungsprojekteFetchAt",
   lastWillhabenFetchAt: "state.lastWillhabenFetchAt",
+  lastDerstandardFetchAt: "state.lastDerstandardFetchAt",
   nextWohnungenRetryAt: "state.nextWohnungenRetryAt",
   nextPlanungsprojekteRetryAt: "state.nextPlanungsprojekteRetryAt",
   wohnberatungAuthError: "state.wohnberatungAuthError",
@@ -228,12 +282,48 @@ export const normalizeWillhabenConfig = (
   };
 };
 
+const defaultDerstandardConfig = (): DerstandardSearchConfig => ({
+  minArea: derstandardMinArea,
+  maxArea: null,
+  minTotalCost: null,
+  maxTotalCost: derstandardMaxTotalCost,
+  districts: Array.from({ length: derstandardDistrictCount }, (_, index) => String(index + 1)),
+});
+
+const normalizeDerstandardDistricts = (raw: unknown): string[] => {
+  if (!Array.isArray(raw)) return defaultDerstandardConfig().districts;
+  const normalized = raw
+    .map((value) => String(value).trim())
+    .map((value) => Number.parseInt(value, 10))
+    .filter((value) => Number.isFinite(value) && value >= 1 && value <= derstandardDistrictCount)
+    .map((value) => String(value));
+  return normalized.length ? Array.from(new Set(normalized)) : defaultDerstandardConfig().districts;
+};
+
+export const normalizeDerstandardConfig = (
+  raw: Partial<DerstandardSearchConfig> | null | undefined,
+): DerstandardSearchConfig => {
+  const defaults = defaultDerstandardConfig();
+  const minArea = normalizeNumber(raw?.minArea);
+  const maxArea = normalizeNumber(raw?.maxArea);
+  const minTotalCost = normalizeNumber(raw?.minTotalCost);
+  const maxTotalCost = normalizeNumber(raw?.maxTotalCost);
+  return {
+    minArea: minArea ?? defaults.minArea,
+    maxArea,
+    minTotalCost,
+    maxTotalCost: maxTotalCost ?? defaults.maxTotalCost,
+    districts: normalizeDerstandardDistricts(raw?.districts),
+  };
+};
+
 const defaultState = (): FlatfinderState => ({
   updatedAt: null,
   lastScrapeAt: null,
   lastWohnungenFetchAt: null,
   lastPlanungsprojekteFetchAt: null,
   lastWillhabenFetchAt: null,
+  lastDerstandardFetchAt: null,
   nextWohnungenRetryAt: null,
   nextPlanungsprojekteRetryAt: null,
   wohnberatungAuthError: null,
@@ -241,6 +331,7 @@ const defaultState = (): FlatfinderState => ({
   planungsprojekte: [],
   wohnungen: [],
   willhaben: [],
+  derstandard: [],
   rateLimit: {
     month: currentMonth(),
     count: 0,
@@ -264,6 +355,7 @@ export const loadState = async (): Promise<FlatfinderState> => {
     lastWohnungenFetchAt: valueOrNull(metaKeys.lastWohnungenFetchAt),
     lastPlanungsprojekteFetchAt: valueOrNull(metaKeys.lastPlanungsprojekteFetchAt),
     lastWillhabenFetchAt: valueOrNull(metaKeys.lastWillhabenFetchAt),
+    lastDerstandardFetchAt: valueOrNull(metaKeys.lastDerstandardFetchAt),
     nextWohnungenRetryAt: valueOrNull(metaKeys.nextWohnungenRetryAt),
     nextPlanungsprojekteRetryAt: valueOrNull(metaKeys.nextPlanungsprojekteRetryAt),
     wohnberatungAuthError: valueOrNull(metaKeys.wohnberatungAuthError),
@@ -271,6 +363,7 @@ export const loadState = async (): Promise<FlatfinderState> => {
     planungsprojekte: loadItems<PlanungsprojektRecord>("wohnberatung", "planungsprojekte"),
     wohnungen: loadItems<WohnungRecord>("wohnberatung", "wohnungen"),
     willhaben: loadItems<WillhabenRecord>("willhaben", "wohnungen"),
+    derstandard: loadItems<DerstandardRecord>("derstandard", "wohnungen"),
     rateLimit: loadRateLimitSync(),
   };
 };
@@ -287,6 +380,7 @@ export const updateMeta = (values: Partial<FlatfinderState>) => {
   write(metaKeys.lastWohnungenFetchAt, values.lastWohnungenFetchAt ?? null);
   write(metaKeys.lastPlanungsprojekteFetchAt, values.lastPlanungsprojekteFetchAt ?? null);
   write(metaKeys.lastWillhabenFetchAt, values.lastWillhabenFetchAt ?? null);
+  write(metaKeys.lastDerstandardFetchAt, values.lastDerstandardFetchAt ?? null);
   write(metaKeys.nextWohnungenRetryAt, values.nextWohnungenRetryAt ?? null);
   write(metaKeys.nextPlanungsprojekteRetryAt, values.nextPlanungsprojekteRetryAt ?? null);
   write(metaKeys.wohnberatungAuthError, values.wohnberatungAuthError ?? null);
@@ -360,6 +454,22 @@ export const loadWillhabenConfig = async (): Promise<WillhabenSearchConfig> => {
 export const saveWillhabenConfig = async (config: WillhabenSearchConfig) => {
   ensureDb();
   setConfig(willhabenConfigKey, JSON.stringify(config));
+};
+
+export const loadDerstandardConfig = async (): Promise<DerstandardSearchConfig> => {
+  ensureDb();
+  const raw = getConfig(derstandardConfigKey);
+  if (!raw) return defaultDerstandardConfig();
+  try {
+    return normalizeDerstandardConfig(JSON.parse(raw) as DerstandardSearchConfig);
+  } catch {
+    return defaultDerstandardConfig();
+  }
+};
+
+export const saveDerstandardConfig = async (config: DerstandardSearchConfig) => {
+  ensureDb();
+  setConfig(derstandardConfigKey, JSON.stringify(config));
 };
 
 export { defaultState };

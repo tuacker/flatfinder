@@ -86,7 +86,7 @@ const initMapToggles = () => {
 };
 
 type ViewName = "root" | "hidden" | "interested" | "settings";
-type SourceFilter = "all" | "wohnberatung" | "willhaben";
+type SourceFilter = "all" | "wohnberatung" | "willhaben" | "derstandard";
 type WillhabenSortKey = "price" | "area" | null;
 type WillhabenSortDir = "asc" | "desc" | null;
 let reorderActive = false;
@@ -141,7 +141,9 @@ const syncViewWithLocation = (replace: boolean) => {
 const resolveSourceFilter = (search: string): SourceFilter => {
   const params = new URLSearchParams(search);
   const source = params.get("source");
-  if (source === "wohnberatung" || source === "willhaben") return source;
+  if (source === "wohnberatung" || source === "willhaben" || source === "derstandard") {
+    return source;
+  }
   return "all";
 };
 
@@ -186,6 +188,7 @@ const rowListIds = {
   wohnungen: "wohnungen-list",
   planungsprojekte: "planungsprojekte-list",
   willhaben: "willhaben-list",
+  derstandard: "derstandard-list",
 } as const;
 
 const getRowList = (type: string) => {
@@ -234,8 +237,9 @@ const placeSeenOrder = (row: HTMLElement, list: HTMLElement) => {
 const matchesSourceFilter = (row: HTMLElement, filter: SourceFilter) => {
   if (filter === "all") return true;
   const type = row.getAttribute("data-type");
-  const isWillhaben = type === "willhaben";
-  return filter === "willhaben" ? isWillhaben : !isWillhaben;
+  if (filter === "willhaben") return type === "willhaben";
+  if (filter === "derstandard") return type === "derstandard";
+  return type === "wohnungen" || type === "planungsprojekte";
 };
 
 const updateHiddenCount = () => {
@@ -1134,6 +1138,103 @@ const initWillhabenSettings = () => {
   });
 };
 
+const initDerstandardSettings = () => {
+  const saveButton = document.getElementById("derstandard-save") as HTMLButtonElement | null;
+  if (!saveButton) return;
+  const minArea = document.getElementById("derstandard-min-area") as HTMLInputElement | null;
+  const maxArea = document.getElementById("derstandard-max-area") as HTMLInputElement | null;
+  const minPrice = document.getElementById("derstandard-min-price") as HTMLInputElement | null;
+  const maxPrice = document.getElementById("derstandard-max-price") as HTMLInputElement | null;
+  const status = document.getElementById("derstandard-status");
+  const districtButtons = Array.from(
+    document.querySelectorAll<HTMLButtonElement>("#derstandard-districts .js-derstandard-district"),
+  );
+
+  const markDirty = () => {
+    settingsDirty = true;
+  };
+
+  const parseNumber = (value: string | null) => {
+    if (!value) return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const parsed = Number(trimmed.replace(",", "."));
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  const syncAllChip = () => {
+    const allChip = districtButtons.find((button) => button.dataset.value === "all");
+    if (!allChip) return;
+    const activeSpecific = districtButtons.filter(
+      (button) => button.dataset.value !== "all" && button.classList.contains("is-active"),
+    );
+    const allActive =
+      activeSpecific.length ===
+      districtButtons.filter((button) => button.dataset.value !== "all").length;
+    allChip.classList.toggle("is-active", allActive || activeSpecific.length === 0);
+  };
+
+  [minArea, maxArea, minPrice, maxPrice]
+    .filter((input): input is HTMLInputElement => Boolean(input))
+    .forEach((input) => {
+      bindOnceEvent(input, "boundDerstandardDirtyInput", "input", markDirty);
+      bindOnceEvent(input, "boundDerstandardDirtyChange", "change", markDirty);
+    });
+
+  districtButtons.forEach((button) => {
+    bindOnce(button, "boundDerstandardDistrict", async (event) => {
+      event.preventDefault();
+      const value = button.dataset.value;
+      if (!value) return;
+      if (value === "all") {
+        const allButtons = districtButtons.filter((btn) => btn.dataset.value !== "all");
+        const shouldActivate = allButtons.some((btn) => !btn.classList.contains("is-active"));
+        allButtons.forEach((btn) => btn.classList.toggle("is-active", shouldActivate));
+      } else {
+        button.classList.toggle("is-active");
+      }
+      syncAllChip();
+      markDirty();
+    });
+  });
+
+  bindOnce(saveButton, "boundDerstandardSave", async (event) => {
+    event.preventDefault();
+    saveButton.disabled = true;
+    if (status) status.textContent = "Saving…";
+    try {
+      const districts = districtButtons
+        .filter(
+          (button) => button.dataset.value !== "all" && button.classList.contains("is-active"),
+        )
+        .map((button) => button.dataset.value ?? "")
+        .filter(Boolean);
+
+      const response = await fetch("/api/derstandard/config", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          minArea: parseNumber(minArea?.value ?? null),
+          maxArea: parseNumber(maxArea?.value ?? null),
+          minTotalCost: parseNumber(minPrice?.value ?? null),
+          maxTotalCost: parseNumber(maxPrice?.value ?? null),
+          districts,
+        }),
+      });
+      if (!response.ok) {
+        if (status) status.textContent = "Save failed.";
+        return;
+      }
+      if (status) status.textContent = "Saved.";
+      settingsDirty = false;
+    } catch {
+      if (status) status.textContent = "Save failed.";
+    } finally {
+      saveButton.disabled = false;
+    }
+  });
+};
+
 const initInteractiveElements = () => {
   initMapToggles();
   initViewToggles();
@@ -1141,6 +1242,7 @@ const initInteractiveElements = () => {
   initWohnberatungSettings();
   initTelegramSettings();
   initWillhabenSettings();
+  initDerstandardSettings();
   initInterestActions();
   initLockActions();
   initRemoveHover();
@@ -1342,6 +1444,7 @@ type FragmentPayload = {
   updatedAt: string | null;
   wohnberatungNextRefreshAt: number;
   willhabenNextRefreshAt: number;
+  derstandardNextRefreshAt: number;
   wohnberatungWohnungenIntervalMs: number;
   wohnberatungPlanungsprojekteIntervalMs: number;
   wohnberatungAuthError: string | null;
@@ -1353,6 +1456,7 @@ type FragmentPayload = {
     wohnungen: string;
     planungsprojekte: string;
     willhaben: string;
+    derstandard: string;
     settings: string;
   };
 };
@@ -1415,6 +1519,10 @@ const applyFragments = (payload: FragmentPayload) => {
   );
   document.body.setAttribute("data-next-refresh-willhaben", String(payload.willhabenNextRefreshAt));
   document.body.setAttribute(
+    "data-next-refresh-derstandard",
+    String(payload.derstandardNextRefreshAt),
+  );
+  document.body.setAttribute(
     "data-ww-interval-wohnungen",
     String(payload.wohnberatungWohnungenIntervalMs),
   );
@@ -1450,6 +1558,10 @@ const applyFragments = (payload: FragmentPayload) => {
   if (!openMapSections.has("willhaben-section")) {
     replaced =
       replaceSection("willhaben-section", payload.sections.willhaben, openMapNodes) || replaced;
+  }
+  if (!openMapSections.has("derstandard-section")) {
+    replaced =
+      replaceSection("derstandard-section", payload.sections.derstandard, openMapNodes) || replaced;
   }
   if (document.body.getAttribute("data-view") !== "settings" && !settingsDirty) {
     replaced =
@@ -1502,6 +1614,7 @@ const initEvents = () => {
         updatedAt?: string;
         nextRefreshWohnberatung?: number;
         nextRefreshWillhaben?: number;
+        nextRefreshDerstandard?: number;
       };
       updatedAt = payload.updatedAt;
       if (updatedAt) {
@@ -1517,6 +1630,12 @@ const initEvents = () => {
         document.body.setAttribute(
           "data-next-refresh-willhaben",
           String(payload.nextRefreshWillhaben),
+        );
+      }
+      if (typeof payload.nextRefreshDerstandard === "number") {
+        document.body.setAttribute(
+          "data-next-refresh-derstandard",
+          String(payload.nextRefreshDerstandard),
         );
       }
       updateNextRefreshLabel();

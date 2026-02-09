@@ -4,7 +4,7 @@ import {
   saveTelegramConfig,
   type TelegramConfig,
   type FlatfinderState,
-} from "../scrapers/wohnberatung/state.js";
+} from "../state/flatfinder-state.js";
 import { updateItemsColumns } from "../db.js";
 import type { StateService } from "./state-service.js";
 import type { InterestService } from "./interest-service.js";
@@ -19,7 +19,7 @@ type TelegramUpdate = {
 type PollingResult = { ok: boolean; updates: TelegramUpdate[] };
 
 const markTelegramNotified = (
-  source: "wohnberatung" | "willhaben",
+  source: "wohnberatung" | "willhaben" | "derstandard",
   type: "wohnungen" | "planungsprojekte",
   items: Array<{ id?: string | null }>,
   now: string,
@@ -176,6 +176,7 @@ export const createTelegramService = (options: {
       markTelegramNotified("wohnberatung", "wohnungen", currentState.wohnungen, now);
       markTelegramNotified("wohnberatung", "planungsprojekte", currentState.planungsprojekte, now);
       markTelegramNotified("willhaben", "wohnungen", currentState.willhaben, now);
+      markTelegramNotified("derstandard", "wohnungen", currentState.derstandard, now);
     }
 
     if (config.pollingEnabled && !wasPollingEnabled && config.botToken) {

@@ -2,7 +2,7 @@ import express from "express";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { assetsDir, storageStatePath } from "./scrapers/wohnberatung/config.js";
-import { updateMeta, loadState } from "./scrapers/wohnberatung/state.js";
+import { updateMeta, loadState } from "./state/flatfinder-state.js";
 import { createStateService } from "./services/state-service.js";
 import { createInterestService } from "./services/interest-service.js";
 import { createTelegramService } from "./services/telegram-service.js";

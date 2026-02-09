@@ -379,12 +379,14 @@ a:hover {
   white-space: nowrap;
 }
 
-.row[data-type="willhaben"] .fact {
+.row[data-type="willhaben"] .fact,
+.row[data-type="derstandard"] .fact {
   white-space: normal;
   align-items: flex-start;
 }
 
-.row[data-type="willhaben"] .fact .value {
+.row[data-type="willhaben"] .fact .value,
+.row[data-type="derstandard"] .fact .value {
   overflow-wrap: anywhere;
 }
 
@@ -886,30 +888,54 @@ body[data-view="settings"] [data-view-group]:not([data-view-group="settings"]) {
   margin-top: 4px;
 }
 
-body[data-source="wohnberatung"] #willhaben-section {
+body[data-source="wohnberatung"] #willhaben-section,
+body[data-source="wohnberatung"] #derstandard-section {
   display: none;
 }
 
 body[data-source="willhaben"] #wohnungen-section,
-body[data-source="willhaben"] #planungsprojekte-section {
+body[data-source="willhaben"] #planungsprojekte-section,
+body[data-source="willhaben"] #derstandard-section {
   display: none;
 }
 
-body[data-source="wohnberatung"] #hidden-list > .row[data-type="willhaben"] {
+body[data-source="derstandard"] #wohnungen-section,
+body[data-source="derstandard"] #planungsprojekte-section,
+body[data-source="derstandard"] #willhaben-section {
+  display: none;
+}
+
+body[data-source="wohnberatung"] #hidden-list > .row[data-type="willhaben"],
+body[data-source="wohnberatung"] #hidden-list > .row[data-type="derstandard"] {
   display: none;
 }
 
 body[data-source="willhaben"] #hidden-list > .row[data-type="wohnungen"],
-body[data-source="willhaben"] #hidden-list > .row[data-type="planungsprojekte"] {
+body[data-source="willhaben"] #hidden-list > .row[data-type="planungsprojekte"],
+body[data-source="willhaben"] #hidden-list > .row[data-type="derstandard"] {
   display: none;
 }
 
-body[data-source="wohnberatung"] #interested-section .subsection[data-type="willhaben"] {
+body[data-source="derstandard"] #hidden-list > .row[data-type="wohnungen"],
+body[data-source="derstandard"] #hidden-list > .row[data-type="planungsprojekte"],
+body[data-source="derstandard"] #hidden-list > .row[data-type="willhaben"] {
+  display: none;
+}
+
+body[data-source="wohnberatung"] #interested-section .subsection[data-type="willhaben"],
+body[data-source="wohnberatung"] #interested-section .subsection[data-type="derstandard"] {
   display: none;
 }
 
 body[data-source="willhaben"] #interested-section .subsection[data-type="wohnungen"],
-body[data-source="willhaben"] #interested-section .subsection[data-type="planungsprojekte"] {
+body[data-source="willhaben"] #interested-section .subsection[data-type="planungsprojekte"],
+body[data-source="willhaben"] #interested-section .subsection[data-type="derstandard"] {
+  display: none;
+}
+
+body[data-source="derstandard"] #interested-section .subsection[data-type="wohnungen"],
+body[data-source="derstandard"] #interested-section .subsection[data-type="planungsprojekte"],
+body[data-source="derstandard"] #interested-section .subsection[data-type="willhaben"] {
   display: none;
 }
 

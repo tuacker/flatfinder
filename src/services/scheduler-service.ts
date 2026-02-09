@@ -1,7 +1,8 @@
 import { calculateWohnberatungIntervalsMs } from "../scrapers/wohnberatung/rate-limiter.js";
-import type { FlatfinderState } from "../scrapers/wohnberatung/state.js";
+import type { FlatfinderState } from "../state/flatfinder-state.js";
 import { registerScraperJobs } from "../runtime/scraper-jobs.js";
 import { willhabenRefreshIntervalMs } from "../scrapers/willhaben/config.js";
+import { derstandardRefreshIntervalMs } from "../scrapers/derstandard/config.js";
 
 const parseTimestampMs = (value: string | null | undefined) => {
   if (!value) return Number.NaN;
@@ -50,12 +51,24 @@ export const getNextWillhabenRefreshAt = (state: FlatfinderState) => {
   return lastRunMs + willhabenRefreshIntervalMs;
 };
 
+export const getNextDerstandardRefreshAt = (state: FlatfinderState) => {
+  const nowMs = Date.now();
+  const lastRunMs = parseTimestampMs(state.lastDerstandardFetchAt ?? null);
+  if (!Number.isFinite(lastRunMs)) return nowMs;
+  const elapsed = nowMs - lastRunMs;
+  if (elapsed >= derstandardRefreshIntervalMs) return nowMs;
+  return lastRunMs + derstandardRefreshIntervalMs;
+};
+
 export const getWohnberatungIntervalsMs = (state: FlatfinderState) =>
   calculateWohnberatungIntervalsMs(state);
 
 export const startScraperJobs = (options: {
   nowIso: () => string;
-  onSchedule: (key: "wohnungen" | "planungsprojekte" | "willhaben", nextAt: number) => void;
+  onSchedule: (
+    key: "wohnungen" | "planungsprojekte" | "willhaben" | "derstandard",
+    nextAt: number,
+  ) => void;
   onUpdate: () => void;
 }) => {
   registerScraperJobs(options);

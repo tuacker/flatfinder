@@ -25,7 +25,7 @@ import {
   isLoginPage,
   loadAuthCookies,
 } from "../scrapers/wohnberatung/wohnberatung-client.js";
-import type { FlatfinderState, InterestInfo } from "../scrapers/wohnberatung/state.js";
+import type { FlatfinderState, InterestInfo } from "../state/flatfinder-state.js";
 import { loadItem, updateItemColumns, updateItemsColumns, type ItemColumnValues } from "../db.js";
 import { createSerialQueue } from "../runtime/scheduler.js";
 import type { StateService } from "./state-service.js";
@@ -531,7 +531,7 @@ export const createInterestService = (options: {
   };
 
   const updateInterestColumns = (optionsInput: {
-    source: "wohnberatung" | "willhaben";
+    source: "wohnberatung" | "willhaben" | "derstandard";
     type: "wohnungen" | "planungsprojekte";
     id: string;
     item: InterestItem;
@@ -704,7 +704,8 @@ export const createInterestService = (options: {
     if (
       input.type !== "wohnungen" &&
       input.type !== "planungsprojekte" &&
-      input.type !== "willhaben"
+      input.type !== "willhaben" &&
+      input.type !== "derstandard"
     ) {
       return { status: 400, body: { ok: false, message: "Unknown item type." } };
     }
@@ -717,7 +718,7 @@ export const createInterestService = (options: {
 
     const now = options.nowIso();
 
-    if (input.type === "willhaben") {
+    if (input.type === "willhaben" || input.type === "derstandard") {
       const interest = ensureInterest(item);
       if (input.action === "add") {
         markInterested(item, now);
@@ -728,7 +729,7 @@ export const createInterestService = (options: {
       }
 
       updateInterestColumns({
-        source: "willhaben",
+        source: input.type,
         type: "wohnungen",
         id: input.id,
         item,

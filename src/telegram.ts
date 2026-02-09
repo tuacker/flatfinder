@@ -1,9 +1,10 @@
 import type {
+  DerstandardRecord,
   PlanungsprojektRecord,
   TelegramConfig,
   WohnungRecord,
   WillhabenRecord,
-} from "./scrapers/wohnberatung/state.js";
+} from "./state/flatfinder-state.js";
 import { fetchWithTimeout } from "./shared/http.js";
 
 type TelegramRequestResult = {
@@ -209,7 +210,10 @@ const buildTelegramPayload = (options: {
 
 const buildTelegramKeyboard = (
   config: TelegramConfig,
-  options: { type: "wohnungen" | "planungsprojekte" | "willhaben"; id: string | null | undefined },
+  options: {
+    type: "wohnungen" | "planungsprojekte" | "willhaben" | "derstandard";
+    id: string | null | undefined;
+  },
 ) => {
   if (!config.enableActions || (!config.pollingEnabled && !config.webhookToken) || !options.id) {
     return undefined;
@@ -262,12 +266,22 @@ const notifyTelegramForWillhaben = async (config: TelegramConfig, item: Willhabe
   return await sendTelegramNotification({ config, ...payload });
 };
 
+const notifyTelegramForDerstandard = async (config: TelegramConfig, item: DerstandardRecord) => {
+  const payload = buildTelegramPayload({
+    title: item.title ?? item.location ?? "DerStandard listing",
+    url: item.url ?? null,
+    keyboard: buildTelegramKeyboard(config, { type: "derstandard", id: item.id }),
+  });
+  return await sendTelegramNotification({ config, ...payload });
+};
+
 export const notifyTelegramNewItems = async (
   config: TelegramConfig | undefined,
   options: {
     wohnungen: WohnungRecord[];
     planungsprojekte: PlanungsprojektRecord[];
     willhaben: WillhabenRecord[];
+    derstandard: DerstandardRecord[];
     now?: string;
   },
 ) => {
@@ -277,6 +291,7 @@ export const notifyTelegramNewItems = async (
     wohnungen: [] as string[],
     planungsprojekte: [] as string[],
     willhaben: [] as string[],
+    derstandard: [] as string[],
   };
 
   const notifyList = async <T extends { id?: string | null; telegramNotifiedAt?: string | null }>(
@@ -308,6 +323,11 @@ export const notifyTelegramNewItems = async (
     options.willhaben.filter((item) => !item.suppressed && !item.hiddenAt),
     (item) => notifyTelegramForWillhaben(config, item),
     notified.willhaben,
+  );
+  await notifyList(
+    options.derstandard.filter((item) => !item.hiddenAt),
+    (item) => notifyTelegramForDerstandard(config, item),
+    notified.derstandard,
   );
 
   return notified;

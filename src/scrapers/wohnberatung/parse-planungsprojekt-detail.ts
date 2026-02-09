@@ -1,6 +1,6 @@
 import { load } from "cheerio";
 import { baseUrl } from "./config.js";
-import type { PlanungsprojektDetail } from "./state.js";
+import type { PlanungsprojektDetail } from "../../state/flatfinder-state.js";
 
 const absoluteUrl = (value: string | null) => {
   if (!value) return null;

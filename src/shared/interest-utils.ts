@@ -1,6 +1,6 @@
 import { comparePriority } from "./interest-priority.js";
 import { INTEREST_REFRESH_INTERVAL_MS, INTEREST_WATCH_JITTER_MS } from "./constants.js";
-import type { InterestInfo } from "../scrapers/wohnberatung/state.js";
+import type { InterestInfo } from "../state/flatfinder-state.js";
 
 type SignedItem = { flags: { angemeldet: boolean }; interest?: InterestInfo };
 

@@ -3,7 +3,7 @@ import { filterPlanungsprojekte } from "./filter.js";
 import { createHttpClient, type HttpClient } from "./http-client.js";
 import { parsePlanungsprojektDetail } from "./parse-planungsprojekt-detail.js";
 import { parsePlanungsprojekte, type Planungsprojekt } from "./parse-planungsprojekte.js";
-import type { PlanungsprojektRecord, FlatfinderState } from "./state.js";
+import type { PlanungsprojektRecord, FlatfinderState } from "../../state/flatfinder-state.js";
 import type { RateLimiter } from "./rate-limiter.js";
 import { isLoginPage } from "./wohnberatung-client.js";
 import type { ScrapeResult } from "./scrape-result.js";

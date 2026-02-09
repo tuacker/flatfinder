@@ -4,9 +4,10 @@ import {
   loadTelegramConfig,
   updateMeta,
   type FlatfinderState,
-} from "../scrapers/wohnberatung/state.js";
+} from "../state/flatfinder-state.js";
 import { sendTelegramMessage } from "../telegram.js";
 import {
+  getNextDerstandardRefreshAt,
   getNextWillhabenRefreshAt,
   getNextWohnberatungRefreshAt,
   getWohnberatungIntervalsMs,
@@ -16,6 +17,7 @@ export type StatePayload = {
   updatedAt: string | null;
   nextRefreshWohnberatung: number;
   nextRefreshWillhaben: number;
+  nextRefreshDerstandard: number;
   wohnberatungWohnungenIntervalMs: number;
   wohnberatungPlanungsprojekteIntervalMs: number;
 };
@@ -52,6 +54,7 @@ export const createStateService = (options: { nowIso: () => string }) => {
       updatedAt: currentState.updatedAt ?? null,
       nextRefreshWohnberatung: getNextWohnberatungRefreshAt(currentState),
       nextRefreshWillhaben: getNextWillhabenRefreshAt(currentState),
+      nextRefreshDerstandard: getNextDerstandardRefreshAt(currentState),
       wohnberatungWohnungenIntervalMs: intervals.wohnungenIntervalMs,
       wohnberatungPlanungsprojekteIntervalMs: intervals.planungsprojekteIntervalMs,
     };
@@ -92,6 +95,7 @@ export const createStateService = (options: { nowIso: () => string }) => {
     syncAuthNotification,
     nextRefreshWohnberatung: getNextWohnberatungRefreshAt,
     nextRefreshWillhaben: getNextWillhabenRefreshAt,
+    nextRefreshDerstandard: getNextDerstandardRefreshAt,
   };
 };
 

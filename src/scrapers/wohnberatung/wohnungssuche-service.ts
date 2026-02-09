@@ -13,7 +13,7 @@ import { createHttpClient, type HttpClient } from "./http-client.js";
 import { parseSuchprofilForm } from "./parse-suchprofil-form.js";
 import { parseWohnungDetail } from "./parse-wohnung-detail.js";
 import { parseWohnungenList, type WohnungListItem } from "./parse-wohnungen-list.js";
-import type { FlatfinderState, WohnungRecord } from "./state.js";
+import type { FlatfinderState, WohnungRecord } from "../../state/flatfinder-state.js";
 import type { RateLimiter } from "./rate-limiter.js";
 import { isLoginPage } from "./wohnberatung-client.js";
 import type { ScrapeResult } from "./scrape-result.js";

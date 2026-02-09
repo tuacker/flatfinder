@@ -4,8 +4,8 @@ import {
   wohnungssuchePreviewCost,
   wohnungssucheResultCost,
 } from "./config.js";
-import { loadRateLimit, saveRateLimit } from "./state.js";
-import type { FlatfinderState, RateLimitState } from "./state.js";
+import { loadRateLimit, saveRateLimit } from "../../state/flatfinder-state.js";
+import type { FlatfinderState, RateLimitState } from "../../state/flatfinder-state.js";
 
 export type RateLimiter = {
   consume: (amount: number) => boolean;

@@ -21,7 +21,7 @@ import type {
   WillhabenDetail,
   WillhabenRecord,
   WillhabenSearchConfig,
-} from "../wohnberatung/state.js";
+} from "../../state/flatfinder-state.js";
 
 type WillhabenAttribute = {
   name: string;

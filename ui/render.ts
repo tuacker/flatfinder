@@ -1,11 +1,13 @@
 import { rateLimitMonthly } from "../src/scrapers/wohnberatung/config.js";
 import type {
+  DerstandardRecord,
+  DerstandardSearchConfig,
   FlatfinderState,
   TelegramConfig,
   WillhabenSearchConfig,
   WohnungRecord,
   WillhabenRecord,
-} from "../src/scrapers/wohnberatung/state.js";
+} from "../src/state/flatfinder-state.js";
 import { comparePriority } from "../src/shared/interest-priority.js";
 import { formatCurrency, parseArea, parseCurrency } from "../src/shared/parsing.js";
 import { formatRefreshLeft, formatTimeLeft } from "./time.js";
@@ -13,18 +15,21 @@ import { formatRefreshLeft, formatTimeLeft } from "./time.js";
 export type RenderOptions = {
   wohnberatungNextRefreshAt: number;
   willhabenNextRefreshAt: number;
+  derstandardNextRefreshAt: number;
   wohnberatungWohnungenIntervalMs: number;
   wohnberatungPlanungsprojekteIntervalMs: number;
   wohnberatungAuthError: string | null;
   sourceFilter?: SourceFilter;
   willhabenFilters?: WillhabenFilters;
   willhabenConfig?: WillhabenSearchConfig | null;
+  derstandardConfig?: DerstandardSearchConfig | null;
 };
 
 export type RenderFragments = {
   updatedAt: string | null;
   wohnberatungNextRefreshAt: number;
   willhabenNextRefreshAt: number;
+  derstandardNextRefreshAt: number;
   wohnberatungWohnungenIntervalMs: number;
   wohnberatungPlanungsprojekteIntervalMs: number;
   wohnberatungAuthError: string | null;
@@ -36,11 +41,12 @@ export type RenderFragments = {
     wohnungen: string;
     planungsprojekte: string;
     willhaben: string;
+    derstandard: string;
     settings: string;
   };
 };
 
-type SourceFilter = "all" | "wohnberatung" | "willhaben";
+type SourceFilter = "all" | "wohnberatung" | "willhaben" | "derstandard";
 export type WillhabenSortKey = "price" | "area" | null;
 export type WillhabenSortDir = "asc" | "desc" | null;
 export type WillhabenFilters = {
@@ -577,6 +583,87 @@ const renderWillhabenRow = (item: WillhabenRecord) => {
   `;
 };
 
+const renderDerstandardRow = (item: DerstandardRecord) => {
+  const detailImages = item.images?.length
+    ? item.images
+    : item.thumbnailUrl
+      ? [item.thumbnailUrl]
+      : [];
+  const imageData = encodeImages(detailImages);
+  const thumb =
+    detailImages.length > 0
+      ? `<button class="image-button js-carousel" data-images="${imageData}">
+         <img class="thumb" src="${safeAttribute(detailImages[0])}" alt="" />
+       </button>`
+      : "";
+
+  const isHidden = Boolean(item.hiddenAt);
+  const isSeen = Boolean(item.seenAt);
+  const visibilityLabel = renderVisibilityLabel(isHidden);
+  const seenButton = !isSeen
+    ? `<button class="seen-toggle js-entry-action" data-action="toggleSeen" data-type="derstandard" data-id="${safeAttribute(item.id)}" aria-label="Mark seen">✓</button>`
+    : "";
+  const isInterested = Boolean(item.interest?.requestedAt);
+  const interestButton = `<button class="btn ${isInterested ? "btn-muted" : "btn-success"} js-interest-action" data-action="${isInterested ? "drop" : "add"}" data-type="derstandard" data-id="${safeAttribute(item.id)}">${isInterested ? "Drop" : "Interested"}</button>`;
+  const entryActions = `
+        <button class="btn btn-muted js-entry-action" data-action="toggleHidden" data-type="derstandard" data-id="${safeAttribute(item.id)}" aria-label="${isHidden ? "Unhide" : "Hide"}">${visibilityLabel}</button>
+      `;
+
+  const rowClasses = ["row"];
+  if (isSeen) rowClasses.push("is-seen");
+  if (!isSeen) rowClasses.push("is-new");
+
+  const summaryFacts = [
+    item.size
+      ? `<div class="fact"><span class="label">Fläche:</span><span class="value">${safeValue(item.size)}</span></div>`
+      : "",
+    item.rooms
+      ? `<div class="fact"><span class="label">Zimmer:</span><span class="value">${safeValue(item.rooms)}</span></div>`
+      : "",
+    item.primaryCost
+      ? `<div class="fact"><span class="label">${safeValue(item.primaryCostLabel ?? "Gesamtmiete")}:</span><span class="value">${safeValue(item.primaryCost)}</span></div>`
+      : "",
+  ].filter(Boolean);
+
+  const secondaryFacts = Object.entries(item.costs ?? {})
+    .filter(([label]) => {
+      if (!item.primaryCostLabel) return true;
+      return label !== item.primaryCostLabel;
+    })
+    .map(
+      ([label, value]) =>
+        `<div class="fact"><span class="label">${safeValue(label)}:</span><span class="value">${safeValue(value)}</span></div>`,
+    );
+
+  return `
+    <div class="${rowClasses.join(" ")}" data-type="derstandard" data-id="${safeAttribute(item.id)}" data-first-seen="${item.firstSeenAt}" data-seen-at="${safeAttribute(item.seenAt ?? "")}" data-hidden-at="${safeAttribute(item.hiddenAt ?? "")}">
+      ${seenButton}
+      ${thumb}
+      <div class="content">
+        <div class="row-header">
+          <div class="title-line">
+            <div class="title">${safeValue(item.title ?? item.location)}</div>
+            ${item.address ? `<div class="meta">${safeValue(item.address)}</div>` : ""}
+          </div>
+          <div class="row-header-actions">
+            <div class="row-header-interest">
+              ${interestButton}
+            </div>
+            <div class="actions">
+              ${entryActions}
+              ${item.url ? `<a class="btn btn-primary" href="${safeAttribute(item.url)}" target="_blank">Open</a>` : ""}
+            </div>
+          </div>
+        </div>
+        <div class="facts">
+          ${summaryFacts.join("")}
+        </div>
+        ${secondaryFacts.length ? `<div class="facts secondary-facts">${secondaryFacts.join("")}</div>` : ""}
+      </div>
+    </div>
+  `;
+};
+
 const renderSection = (
   title: string,
   items: string[],
@@ -730,6 +817,69 @@ const renderWillhabenSettings = (config: WillhabenSearchConfig | null | undefine
   `;
 };
 
+const renderDerstandardSettings = (config: DerstandardSearchConfig | null | undefined) => {
+  const minArea = config?.minArea ?? "";
+  const maxArea = config?.maxArea ?? "";
+  const minPrice = config?.minTotalCost ?? "";
+  const maxPrice = config?.maxTotalCost ?? "";
+  const selectedDistricts = new Set(config?.districts ?? []);
+  const districtOptions = Array.from({ length: 23 }, (_, index) => String(index + 1));
+
+  return `
+    <div class="settings-card" id="derstandard-settings">
+      <div class="settings-header">
+        <h2>DerStandard search</h2>
+        <div class="settings-actions">
+          <button class="btn btn-primary" id="derstandard-save">Save</button>
+        </div>
+      </div>
+      <div class="settings-grid">
+        <label class="settings-field">
+          <span>Min Fläche (m²)</span>
+          <input type="number" id="derstandard-min-area" value="${escapeHtml(
+            String(minArea),
+          )}" placeholder="e.g. 45" min="0" step="1" />
+        </label>
+        <label class="settings-field">
+          <span>Max Fläche (m²)</span>
+          <input type="number" id="derstandard-max-area" value="${escapeHtml(
+            String(maxArea),
+          )}" placeholder="e.g. 120" min="0" step="1" />
+        </label>
+        <label class="settings-field">
+          <span>Min Gesamtmiete (€)</span>
+          <input type="number" id="derstandard-min-price" value="${escapeHtml(
+            String(minPrice),
+          )}" placeholder="e.g. 600" min="0" step="1" />
+        </label>
+        <label class="settings-field">
+          <span>Max Gesamtmiete (€)</span>
+          <input type="number" id="derstandard-max-price" value="${escapeHtml(
+            String(maxPrice),
+          )}" placeholder="e.g. 1250" min="0" step="1" />
+        </label>
+      </div>
+      <div class="settings-chips" id="derstandard-districts">
+        <span>Districts</span>
+        <button class="filter-chip js-derstandard-district${
+          selectedDistricts.size === 0 || selectedDistricts.size === districtOptions.length
+            ? " is-active"
+            : ""
+        }" data-value="all">All</button>
+        ${districtOptions
+          .map((value) => {
+            const active = selectedDistricts.has(value);
+            return `<button class="filter-chip js-derstandard-district${
+              active ? " is-active" : ""
+            }" data-value="${escapeHtml(value)}">${escapeHtml(value.padStart(2, "0"))}.</button>`;
+          })
+          .join("")}
+      </div>
+      <div class="settings-status" id="derstandard-status"></div>
+    </div>
+  `;
+};
+
 const renderWillhabenControls = (options: { districts: string[]; filters: WillhabenFilters }) => `
   <div class="willhaben-controls" id="willhaben-controls">
     <div class="filter-group">
@@ -763,12 +913,14 @@ const renderWillhabenControls = (options: { districts: string[]; filters: Willha
 const renderSettingsSection = (
   config: TelegramConfig | null | undefined,
   willhabenConfig?: WillhabenSearchConfig | null,
+  derstandardConfig?: DerstandardSearchConfig | null,
 ) => `
   <div id="settings-section" class="section" data-view-group="settings">
     <h2>Settings</h2>
     ${renderWohnberatungSettings()}
     ${renderTelegramSettings(config)}
     ${renderWillhabenSettings(willhabenConfig)}
+    ${renderDerstandardSettings(derstandardConfig)}
   </div>
 `;
 
@@ -822,6 +974,7 @@ const buildSections = (
   state: FlatfinderState,
   telegramConfig?: TelegramConfig | null,
   willhabenConfig?: WillhabenSearchConfig | null,
+  derstandardConfig?: DerstandardSearchConfig | null,
   willhabenFilters?: WillhabenFilters,
 ) => {
   const isInterested = (item: {
@@ -879,12 +1032,17 @@ const buildSections = (
     );
   }
   const hiddenWillhaben = state.willhaben.filter((item) => item.hiddenAt && !item.suppressed);
+  const visibleDerstandard = state.derstandard.filter(
+    (item) => !item.hiddenAt && !item.interest?.requestedAt,
+  );
+  const hiddenDerstandard = state.derstandard.filter((item) => item.hiddenAt);
 
   const wohnungen = visibleWohnungen.map((item) => renderWohnungRow(item, { showCountdown: true }));
   const planungsprojekte = visiblePlanungsprojekte.map((item) =>
     renderPlanungsprojektRow(item, { showCountdown: true }),
   );
   const willhaben = sortedWillhaben.map((item) => renderWillhabenRow(item));
+  const derstandard = visibleDerstandard.map((item) => renderDerstandardRow(item));
   const willhabenDistricts = Array.from(
     new Set(
       state.willhaben
@@ -922,6 +1080,10 @@ const buildSections = (
       hiddenAt: item.hiddenAt ?? "",
       html: renderWillhabenRow(item),
     })),
+    ...hiddenDerstandard.map((item) => ({
+      hiddenAt: item.hiddenAt ?? "",
+      html: renderDerstandardRow(item),
+    })),
   ].sort((a, b) => b.hiddenAt.localeCompare(a.hiddenAt));
 
   const hiddenRows = hiddenItems.map((item) => item.html);
@@ -929,9 +1091,13 @@ const buildSections = (
   const wohnungenCount = wohnungen.length;
   const planungsprojekteCount = planungsprojekte.length;
   const willhabenCount = willhaben.length;
+  const derstandardCount = derstandard.length;
   const interestedWillhaben = state.willhaben
     .filter((item) => !item.hiddenAt && item.interest?.requestedAt && !item.suppressed)
     .map((item) => renderWillhabenRow(item));
+  const interestedDerstandard = state.derstandard
+    .filter((item) => !item.hiddenAt && item.interest?.requestedAt)
+    .map((item) => renderDerstandardRow(item));
 
   const interestedSection = `
     <div class="section" id="interested-section" data-view-group="interested">
@@ -954,6 +1120,12 @@ const buildSections = (
         "interested-willhaben-list",
         interestedWillhaben,
       )}
+      ${renderSubsection(
+        `DerStandard (${interestedDerstandard.length})`,
+        "derstandard",
+        "interested-derstandard-list",
+        interestedDerstandard,
+      )}
     </div>
   `;
 
@@ -969,7 +1141,7 @@ const buildSections = (
   return {
     hiddenSection: renderHiddenSection(hiddenRows, hiddenCount),
     interestedSection,
-    settingsSection: renderSettingsSection(telegramConfig, willhabenConfig),
+    settingsSection: renderSettingsSection(telegramConfig, willhabenConfig, derstandardConfig),
     wohnungenSection: renderSection(
       `Wohnungen (${wohnungenCount})`,
       wohnungen,
@@ -991,10 +1163,18 @@ const buildSections = (
       "willhaben-section",
       "root",
     ),
+    derstandardSection: renderSection(
+      `DerStandard (${derstandardCount})`,
+      derstandard,
+      "derstandard-list",
+      "derstandard-section",
+      "root",
+    ),
     hiddenCount,
     wohnungenCount,
     planungsprojekteCount,
     willhabenCount,
+    derstandardCount,
   };
 };
 
@@ -1007,12 +1187,14 @@ export const renderFragments = (
     state,
     telegramConfig,
     options.willhabenConfig,
+    options.derstandardConfig,
     options.willhabenFilters,
   );
   return {
     updatedAt: state.updatedAt ?? null,
     wohnberatungNextRefreshAt: options.wohnberatungNextRefreshAt,
     willhabenNextRefreshAt: options.willhabenNextRefreshAt,
+    derstandardNextRefreshAt: options.derstandardNextRefreshAt,
     wohnberatungWohnungenIntervalMs: options.wohnberatungWohnungenIntervalMs,
     wohnberatungPlanungsprojekteIntervalMs: options.wohnberatungPlanungsprojekteIntervalMs,
     wohnberatungAuthError: options.wohnberatungAuthError,
@@ -1024,6 +1206,7 @@ export const renderFragments = (
       wohnungen: sections.wohnungenSection,
       planungsprojekte: sections.planungsprojekteSection,
       willhaben: sections.willhabenSection,
+      derstandard: sections.derstandardSection,
       settings: sections.settingsSection,
     },
   };
@@ -1039,6 +1222,7 @@ export const renderPage = (
     state,
     telegramConfig,
     options.willhabenConfig,
+    options.derstandardConfig,
     options.willhabenFilters,
   );
 
@@ -1054,7 +1238,7 @@ export const renderPage = (
         <link rel="stylesheet" href="/app.css" />
         <script src="/app.js" type="module" defer></script>
       </head>
-      <body data-updated-at="${updatedAt}" data-next-refresh-wohnberatung="${options.wohnberatungNextRefreshAt}" data-next-refresh-willhaben="${options.willhabenNextRefreshAt}" data-ww-interval-wohnungen="${options.wohnberatungWohnungenIntervalMs}" data-ww-interval-planungsprojekte="${options.wohnberatungPlanungsprojekteIntervalMs}" data-view="root" data-source="${sourceFilter}">
+      <body data-updated-at="${updatedAt}" data-next-refresh-wohnberatung="${options.wohnberatungNextRefreshAt}" data-next-refresh-willhaben="${options.willhabenNextRefreshAt}" data-next-refresh-derstandard="${options.derstandardNextRefreshAt}" data-ww-interval-wohnungen="${options.wohnberatungWohnungenIntervalMs}" data-ww-interval-planungsprojekte="${options.wohnberatungPlanungsprojekteIntervalMs}" data-view="root" data-source="${sourceFilter}">
         <div class="header">
         <div class="header-row">
             <div class="header-title">
@@ -1063,6 +1247,7 @@ export const renderPage = (
                 <button class="btn btn-muted js-source-toggle${sourceFilter === "all" ? " is-active" : ""}" data-source="all">All</button>
                 <button class="btn btn-muted js-source-toggle${sourceFilter === "wohnberatung" ? " is-active" : ""}" data-source="wohnberatung">Wiener Wohnen</button>
                 <button class="btn btn-muted js-source-toggle${sourceFilter === "willhaben" ? " is-active" : ""}" data-source="willhaben">Willhaben</button>
+                <button class="btn btn-muted js-source-toggle${sourceFilter === "derstandard" ? " is-active" : ""}" data-source="derstandard">DerStandard</button>
               </div>
             </div>
             <div class="header-status">
@@ -1092,6 +1277,7 @@ export const renderPage = (
         ${sections.wohnungenSection}
         ${sections.planungsprojekteSection}
         ${sections.willhabenSection}
+        ${sections.derstandardSection}
 
         <div id="carousel" class="carousel hidden">
           <button class="close" aria-label="Close">×</button>

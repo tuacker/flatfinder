@@ -1,16 +1,30 @@
-import type { FlatfinderState } from "../scrapers/wohnberatung/state.js";
+import type { FlatfinderState } from "../state/flatfinder-state.js";
 
-export type ItemType = "wohnungen" | "planungsprojekte" | "willhaben";
+export type ItemType = "wohnungen" | "planungsprojekte" | "willhaben" | "derstandard";
 export type WohnberatungType = "wohnungen" | "planungsprojekte";
 
-export const getCollection = (state: FlatfinderState, type: ItemType) =>
-  type === "wohnungen"
-    ? state.wohnungen
-    : type === "planungsprojekte"
-      ? state.planungsprojekte
-      : type === "willhaben"
-        ? state.willhaben
-        : null;
+export function getCollection(
+  state: FlatfinderState,
+  type: "wohnungen",
+): FlatfinderState["wohnungen"];
+export function getCollection(
+  state: FlatfinderState,
+  type: "planungsprojekte",
+): FlatfinderState["planungsprojekte"];
+export function getCollection(
+  state: FlatfinderState,
+  type: "willhaben",
+): FlatfinderState["willhaben"];
+export function getCollection(
+  state: FlatfinderState,
+  type: "derstandard",
+): FlatfinderState["derstandard"];
+export function getCollection(state: FlatfinderState, type: ItemType) {
+  if (type === "wohnungen") return state.wohnungen;
+  if (type === "planungsprojekte") return state.planungsprojekte;
+  if (type === "willhaben") return state.willhaben;
+  return state.derstandard;
+}
 
 export const getPageForType = (type: WohnberatungType) =>
   type === "wohnungen" ? "wohnung" : "projekt";
@@ -18,4 +32,6 @@ export const getPageForType = (type: WohnberatungType) =>
 export const getDbLocation = (type: ItemType) =>
   type === "willhaben"
     ? { source: "willhaben" as const, type: "wohnungen" as const }
-    : { source: "wohnberatung" as const, type: type };
+    : type === "derstandard"
+      ? { source: "derstandard" as const, type: "wohnungen" as const }
+      : { source: "wohnberatung" as const, type: type };
